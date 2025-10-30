@@ -1,5 +1,5 @@
-from typing import List, Dict, Any, Optional, Union
-from datetime import datetime, date
+from typing import List, Dict, Any, Optional
+from datetime import datetime
 from pydantic import BaseModel, Field
 from enum import Enum
 
@@ -9,8 +9,25 @@ class TimeGranularity(str, Enum):
     WEEKLY = "weekly"
     MONTHLY = "monthly"
 
-class MarketIndex(BaseModel):
-    """大盘指数基础信息"""
+class KLineData(BaseModel):
+    """K线数据基础类"""
+    symbol: str = Field(..., description="标的代码")
+    name: str = Field(..., description="标的名称")
+    granularity: TimeGranularity = Field(..., description="时间粒度")
+    timestamp: datetime = Field(..., description="时间戳")
+    open: float = Field(..., description="开盘价")
+    high: float = Field(..., description="最高价")
+    low: float = Field(..., description="最低价")
+    close: float = Field(..., description="收盘价")
+    volume: int = Field(..., description="成交量")
+    turnover: float = Field(..., description="成交额")
+    change: float = Field(..., description="涨跌额")
+    change_rate: float = Field(..., description="涨跌幅")
+    amplitude: float = Field(..., description="振幅")
+    turnover_rate: Optional[float] = Field(None, description="换手率")
+
+class IndexRealTimeData(BaseModel):
+    """指数实时数据"""
     symbol: str = Field(..., description="指数代码")
     name: str = Field(..., description="指数名称")
     timestamp: datetime = Field(..., description="时间戳")
@@ -30,8 +47,15 @@ class MarketIndex(BaseModel):
     amplitude: float = Field(..., description="振幅")
     turnover_rate: Optional[float] = Field(None, description="换手率")
 
-class StockTickData(BaseModel):
-    """股票实时tick数据"""
+class IndexData(BaseModel):
+    """指数完整数据"""
+    real_time: IndexRealTimeData = Field(..., description="实时数据")
+    daily_klines: List[KLineData] = Field(default_factory=list, description="日K线数据")
+    weekly_klines: List[KLineData] = Field(default_factory=list, description="周K线数据")
+    monthly_klines: List[KLineData] = Field(default_factory=list, description="月K线数据")
+
+class StockRealTimeData(BaseModel):
+    """股票实时数据"""
     symbol: str = Field(..., description="股票代码")
     name: str = Field(..., description="股票名称")
     timestamp: datetime = Field(..., description="时间戳")
@@ -71,8 +95,16 @@ class StockTickData(BaseModel):
     medium_net_inflow: Optional[float] = Field(None, description="中单净流入")
     small_net_inflow: Optional[float] = Field(None, description="小单净流入")
 
-class Position(BaseModel):
+class StockData(BaseModel):
+    """股票完整数据"""
+    real_time: StockRealTimeData = Field(..., description="实时数据")
+    daily_klines: List[KLineData] = Field(default_factory=list, description="日K线数据")
+    weekly_klines: List[KLineData] = Field(default_factory=list, description="周K线数据")
+    monthly_klines: List[KLineData] = Field(default_factory=list, description="月K线数据")
+
+class PositionData(BaseModel):
     """持仓信息"""
+    timestamp: datetime = Field(..., description="时间戳")
     symbol: str = Field(..., description="股票代码")
     name: str = Field(..., description="股票名称")
     quantity: int = Field(..., description="持仓数量")
@@ -82,9 +114,8 @@ class Position(BaseModel):
     market_value: float = Field(..., description="市值")
     profit_loss: float = Field(..., description="浮动盈亏")
     profit_loss_rate: float = Field(..., description="盈亏比例")
-    timestamp: datetime = Field(..., description="时间戳")
 
-class AccountInfo(BaseModel):
+class AccountData(BaseModel):
     """账户信息"""
     timestamp: datetime = Field(..., description="时间戳")
     total_assets: float = Field(..., description="总资产")
@@ -99,35 +130,51 @@ class AccountInfo(BaseModel):
     position_rate: float = Field(..., description="持仓比例")
     margin_ratio: Optional[float] = Field(None, description="保证金比例")
 
-class HistoricalKLine(BaseModel):
-    """历史K线数据"""
-    symbol: str = Field(..., description="标的代码")
-    name: str = Field(..., description="标的名称")
-    granularity: TimeGranularity = Field(..., description="时间粒度")
-    timestamp: datetime = Field(..., description="时间戳")
-    open: float = Field(..., description="开盘价")
-    high: float = Field(..., description="最高价")
-    low: float = Field(..., description="最低价")
-    close: float = Field(..., description="收盘价")
-    volume: int = Field(..., description="成交量")
-    turnover: float = Field(..., description="成交额")
-    change: float = Field(..., description="涨跌额")
-    change_rate: float = Field(..., description="涨跌幅")
-    amplitude: float = Field(..., description="振幅")
-    turnover_rate: Optional[float] = Field(None, description="换手率")
-
-class ObservationData(BaseModel):
-    """完整的观测数据"""
-    timestamp: datetime = Field(..., description="观测时间点")
+class ObervationSpace(BaseModel):
+    """交易状态观测总入口类"""
+    timestamp: datetime = Field(..., description="状态时间戳")
     
-    # 实时信息
-    realtime_market: List[MarketIndex] = Field(..., description="实时大盘信息")
-    realtime_stocks: List[StockTickData] = Field(..., description="实时自选股票信息")
-    realtime_account: AccountInfo = Field(..., description="实时账户信息")
+    # 市场数据
+    market_indices: Dict[str, IndexData] = Field(default_factory=dict, description="大盘指数数据，key为指数代码")
+    stock_data: Dict[str, StockData] = Field(default_factory=dict, description="股票数据，key为股票代码")
     
-    # 历史信息
-    historical_market: Dict[TimeGranularity, List[MarketIndex]] = Field(..., description="历史大盘信息")
-    historical_stocks: Dict[TimeGranularity, List[StockTickData]] = Field(..., description="历史自选股票信息")
+    # 投资组合数据
+    account_info: AccountData = Field(..., description="账户信息")
+    positions: Dict[str, PositionData] = Field(default_factory=dict, description="持仓信息，key为股票代码")
     
-    # 元数据
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="元数据")
+    # 配置信息
+    watch_list: List[str] = Field(default_factory=list, description="自选股列表")
+    market_index_list: List[str] = Field(default_factory=list, description="关注的大盘指数列表")
+    
+    # 环境状态
+    trading_enabled: bool = Field(..., description="是否可交易")
+    market_status: str = Field(..., description="市场状态：open/closed")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "timestamp": "2024-01-15T09:30:00",
+                "market_indices": {
+                    "000001": {
+                        "real_time": {...},
+                        "daily_klines": [...],
+                        "weekly_klines": [...],
+                        "monthly_klines": [...]
+                    }
+                },
+                "stock_data": {
+                    "000001": {
+                        "real_time": {...},
+                        "daily_klines": [...],
+                        "weekly_klines": [...],
+                        "monthly_klines": [...]
+                    }
+                },
+                "account_info": {...},
+                "positions": {...},
+                "watch_list": ["000001", "000002"],
+                "market_index_list": ["000001", "000300"],
+                "trading_enabled": True,
+                "market_status": "open"
+            }
+        }
