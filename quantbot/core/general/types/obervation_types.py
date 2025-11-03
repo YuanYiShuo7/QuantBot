@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field
 from enum import Enum
-
+from order_types import OrderList
 class TimeGranularity(str, Enum):
     MINUTE = "minute"
     DAILY = "daily"
@@ -140,7 +140,10 @@ class ObervationSpace(BaseModel):
     
     # 投资组合数据
     account_info: AccountData = Field(..., description="账户信息")
-    positions: Dict[str, PositionData] = Field(default_factory=dict, description="持仓信息，key为股票代码")
+    positions: List[PositionData] = Field(default_factory=dict, description="持仓信息，key为股票代码")
+
+    # 订单信息
+    orders: OrderList = Field(default_factory=OrderList, description="当前订单列表")
     
     # 配置信息
     watch_list: List[str] = Field(default_factory=list, description="自选股列表")
@@ -148,7 +151,7 @@ class ObervationSpace(BaseModel):
     
     # 环境状态
     trading_enabled: bool = Field(..., description="是否可交易")
-    market_status: str = Field(..., description="市场状态：open/closed")
+    market_status: str = Field(..., description="市场状态")
     
     class Config:
         schema_extra = {
@@ -172,6 +175,7 @@ class ObervationSpace(BaseModel):
                 },
                 "account_info": {...},
                 "positions": {...},
+                "orders": {...},
                 "watch_list": ["000001", "000002"],
                 "market_index_list": ["000001", "000300"],
                 "trading_enabled": True,
