@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field
 from enum import Enum
-from order_types import OrderList
+
 class TimeGranularity(str, Enum):
     MINUTE = "minute"
     DAILY = "daily"
@@ -102,64 +102,42 @@ class StockData(BaseModel):
     weekly_klines: List[KLineData] = Field(default_factory=list, description="周K线数据")
     monthly_klines: List[KLineData] = Field(default_factory=list, description="月K线数据")
 
-class PositionData(BaseModel):
-    """持仓信息"""
-    timestamp: datetime = Field(..., description="时间戳")
-    symbol: str = Field(..., description="股票代码")
-    name: str = Field(..., description="股票名称")
-    quantity: int = Field(..., description="持仓数量")
-    available_quantity: int = Field(..., description="可用数量")
-    cost_price: float = Field(..., description="成本价")
-    current_price: float = Field(..., description="当前价")
-    market_value: float = Field(..., description="市值")
-    profit_loss: float = Field(..., description="浮动盈亏")
-    profit_loss_rate: float = Field(..., description="盈亏比例")
-
-class AccountData(BaseModel):
-    """账户信息"""
-    timestamp: datetime = Field(..., description="时间戳")
-    total_assets: float = Field(..., description="总资产")
-    net_assets: float = Field(..., description="净资产")
-    available_cash: float = Field(..., description="可用资金")
-    market_value: float = Field(..., description="持仓市值")
-    total_profit_loss: float = Field(..., description="总浮动盈亏")
-    total_profit_loss_rate: float = Field(..., description="总盈亏比例")
-    today_profit_loss: float = Field(..., description="当日浮动盈亏")
+class MarketSchema(BaseModel):
+    """市场相关数据 - 外部市场环境，不可控部分"""
+    timestamp: datetime = Field(..., description="市场数据时间戳")
     
-    # 风险指标
-    position_rate: float = Field(..., description="持仓比例")
-    margin_ratio: Optional[float] = Field(None, description="保证金比例")
-
-class ObervationSpace(BaseModel):
-    """交易状态观测总入口类"""
-    timestamp: datetime = Field(..., description="状态时间戳")
+    # 市场状态
+    market_status: str = Field(..., description="市场状态")
     
     # 市场数据
     market_indices: Dict[str, IndexData] = Field(default_factory=dict, description="大盘指数数据，key为指数代码")
     stock_data: Dict[str, StockData] = Field(default_factory=dict, description="股票数据，key为股票代码")
     
-    # 投资组合数据
-    account_info: AccountData = Field(..., description="账户信息")
-    positions: List[PositionData] = Field(default_factory=dict, description="持仓信息，key为股票代码")
-
-    # 订单信息
-    orders: OrderList = Field(default_factory=OrderList, description="当前订单列表")
-    
-    # 配置信息
-    watch_list: List[str] = Field(default_factory=list, description="自选股列表")
-    market_index_list: List[str] = Field(default_factory=list, description="关注的大盘指数列表")
-    
-    # 环境状态
-    trading_enabled: bool = Field(..., description="是否可交易")
-    market_status: str = Field(..., description="市场状态")
-    
     class Config:
         schema_extra = {
             "example": {
                 "timestamp": "2024-01-15T09:30:00",
+                "market_status": "open",
                 "market_indices": {
                     "000001": {
-                        "real_time": {...},
+                        "real_time": {
+                            "symbol": "000001",
+                            "name": "上证指数",
+                            "timestamp": "2024-01-15T09:30:00",
+                            "current_price": 3200.0,
+                            "change": 15.0,
+                            "change_rate": 0.47,
+                            "volume": 150000000,
+                            "turnover": 18000000000.0,
+                            "open": 3190.0,
+                            "high": 3210.0,
+                            "low": 3185.0,
+                            "pre_close": 3185.0,
+                            "pe_ratio": 15.0,
+                            "pb_ratio": 1.5,
+                            "amplitude": 0.78,
+                            "turnover_rate": None
+                        },
                         "daily_klines": [...],
                         "weekly_klines": [...],
                         "monthly_klines": [...]
@@ -167,18 +145,38 @@ class ObervationSpace(BaseModel):
                 },
                 "stock_data": {
                     "000001": {
-                        "real_time": {...},
+                        "real_time": {
+                            "symbol": "000001",
+                            "name": "平安银行",
+                            "timestamp": "2024-01-15T09:30:00",
+                            "current_price": 13.0,
+                            "open": 12.8,
+                            "high": 13.2,
+                            "low": 12.7,
+                            "pre_close": 12.8,
+                            "change": 0.2,
+                            "change_rate": 1.56,
+                            "volume": 1000000,
+                            "turnover": 13000000.0,
+                            "bid_prices": [12.99, 12.98, 12.97, 12.96, 12.95],
+                            "bid_volumes": [50000, 60000, 70000, 80000, 90000],
+                            "ask_prices": [13.01, 13.02, 13.03, 13.04, 13.05],
+                            "ask_volumes": [40000, 50000, 60000, 70000, 80000],
+                            "pe_ratio": 8.5,
+                            "pb_ratio": 0.9,
+                            "amplitude": 3.91,
+                            "turnover_rate": 0.5,
+                            "volume_ratio": 1.2,
+                            "committee": 0.1,
+                            "main_net_inflow": 5000000.0,
+                            "large_net_inflow": 3000000.0,
+                            "medium_net_inflow": 1000000.0,
+                            "small_net_inflow": 1000000.0
+                        },
                         "daily_klines": [...],
                         "weekly_klines": [...],
                         "monthly_klines": [...]
                     }
-                },
-                "account_info": {...},
-                "positions": {...},
-                "orders": {...},
-                "watch_list": ["000001", "000002"],
-                "market_index_list": ["000001", "000300"],
-                "trading_enabled": True,
-                "market_status": "open"
+                }
             }
         }

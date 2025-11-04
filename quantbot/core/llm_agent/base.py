@@ -1,217 +1,402 @@
-# llm_agent.py
-import json
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from typing import Dict, Any, List
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 import logging
+import json
+import re
+from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+import torch
 
+from general.schemas.action_schema import ActionSchemaUnion, AddOrderActionSchema, CancelOrderActionSchema, NoneActionSchema, ActionType
+from general.schemas.order_schema import OrderFormSchema, OrderType
 from general.interfaces.llm_agent_interface import LLMAgentInterface
-from config.llm_agent_config import AgentConfig
-from general.types.action_types import ActionSpace, AddOrderAction, CancelOrderAction, NoneAction
-from general.types.order_types import OrderType, OrderStatus, OrderInterface
-from general.types.obervation_types import ObervationSpace
-
 class LLMAgent(LLMAgentInterface):
-    """LLM Agent 实现类"""
+    """默认LLM Agent实现类 - 使用HuggingFace本地模型"""
     
     def __init__(self, config: Dict[str, Any] = None):
-        """初始化LLM Agent"""
-        self.config = AgentConfig()
-        if config:
-            self._update_config(config)
-            
+        self.config = config or {}
         self.logger = logging.getLogger(__name__)
-        self._load_model()
-        self._initialize_conversation_template()
         
-    def _update_config(self, config: Dict[str, Any]):
-        """更新配置参数"""
-        for key, value in config.items():
-            if hasattr(self.config, key):
-                setattr(self.config, key, value)
-            elif isinstance(self.config.model_config, dict) and key in self.config.model_config:
-                self.config.model_config[key] = value
+        # 模型配置
+        self.model_path = self.config.get('model_path', 'deepseek-ai/DeepSeek-V2')
+        self.device = self.config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+        self.temperature = self.config.get('temperature', 0.7)
+        self.max_new_tokens = self.config.get('max_new_tokens', 1024)
+        
+        # 系统提示词
+        self.system_prompt = self.config.get('system_prompt', self._get_default_system_prompt())
+        
+        # 初始化模型和分词器
+        self.tokenizer = None
+        self.model = None
+        self._load_model()
+        
+        self.logger.info(f"LLM Agent初始化完成，模型路径: {self.model_path}")
+        self.logger.info(f"设备: {self.device}")
     
     def _load_model(self):
-        """从本地加载模型和tokenizer"""
+        """加载本地模型"""
         try:
-            self.logger.info(f"加载模型从: {self.config.model_path}")
+            self.logger.info("正在加载模型...")
+            
+            # 加载分词器
             self.tokenizer = AutoTokenizer.from_pretrained(
-                self.config.tokenizer_path,
+                self.model_path,
                 trust_remote_code=True
             )
             
+            # 加载模型
             self.model = AutoModelForCausalLM.from_pretrained(
-                self.config.model_path,
-                torch_dtype=torch.float16,
-                device_map="auto",
+                self.model_path,
+                torch_dtype=torch.float16 if self.device == 'cuda' else torch.float32,
+                device_map="auto" if self.device == 'cuda' else None,
                 trust_remote_code=True
             )
             
-            # 设置模型推理参数
-            self.generation_config = {
-                "max_new_tokens": 1024,
-                "temperature": self.config.model_config["temperature"],
-                "top_p": self.config.model_config["top_p"],
-                "do_sample": self.config.model_config["do_sample"],
-                "pad_token_id": self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
-                "eos_token_id": self.tokenizer.eos_token_id
-            }
+            # 生成配置
+            self.generation_config = GenerationConfig(
+                temperature=self.temperature,
+                max_new_tokens=self.max_new_tokens,
+                do_sample=True,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
             
             self.logger.info("模型加载完成")
             
         except Exception as e:
-            self.logger.error(f"模型加载失败: {e}")
+            self.logger.error(f"模型加载失败: {str(e)}")
             raise
     
-    def _initialize_conversation_template(self):
-        """初始化对话模板"""
-        self.conversation_template = {
-            "system": self.config.system_prompt,
-            "user": "当前市场状态：\n{observation_json}\n\n请基于以上信息进行分析并生成交易决策："
-        }
-    
-    def _observation_to_json(self, observation: ObervationSpace) -> str:
-        """将observation对象转换为JSON字符串"""
-        try:
-            # 转换为字典
-            obs_dict = observation.dict()
-            
-            # 处理特殊字段
-            if 'timestamp' in obs_dict:
-                obs_dict['timestamp'] = obs_dict['timestamp'].isoformat()
+    def _get_default_system_prompt(self) -> str:
+        """获取默认系统提示词 - A股交易专用"""
+        return """你是一个专业的A股量化交易员。请基于提供的市场信息和账户状态，做出符合A股交易规则的理性投资决策。
 
+A股交易规则：
+1. 交易时间：工作日 9:30-11:30, 13:00-15:00
+2. 交易单位：买入数量必须为100股及其整数倍（1手=100股）
+3. 价格限制：涨跌幅限制为±10%（ST股为±5%）
+4. T+1制度：当日买入的股票下一交易日才能卖出
+
+风险控制原则：
+1. 单只股票持仓不超过总资产的20%
+2. 单次交易金额不超过可用资金的30%
+3. 保持投资组合的适度分散
+
+输出要求：
+- 必须使用JSON格式输出
+- 可以同时执行多个订单操作
+- 每个操作必须是独立的JSON对象
+- 确保所有数值字段类型正确
+- 数量必须是100的整数倍
+- 价格保留2位小数
+
+输出示例：
+
+示例1 - 单个买入操作：
+{
+  "reasoning": "基于技术分析，平安银行突破关键阻力位，MACD金叉，建议买入",
+  "action_type": "ADD_ORDER",
+  "symbol": "000001",
+  "order_type": "BUY",
+  "price": 12.50,
+  "quantity": 500
+}
+
+示例2 - 多个操作：
+[
+  {
+    "reasoning": "贵州茅台技术面出现顶背离，建议部分获利了结",
+    "action_type": "ADD_ORDER", 
+    "symbol": "600519",
+    "order_type": "SELL",
+    "price": 1650.00,
+    "quantity": 100
+  },
+  {
+    "reasoning": "宁德时代回调至支撑位，估值合理，建议买入",
+    "action_type": "ADD_ORDER",
+    "symbol": "300750", 
+    "order_type": "BUY",
+    "price": 185.50,
+    "quantity": 200
+  }
+]
+
+示例3 - 取消订单：
+{
+  "reasoning": "市场环境变化，原买单价格偏离当前市价过大，建议取消",
+  "action_type": "CANCEL_ORDER",
+  "order_id": "ORD_20240115001"
+}
+
+示例4 - 无操作：
+{
+  "reasoning": "当前市场震荡较大，缺乏明确趋势，建议观望等待更好机会",
+  "action_type": "NONE"
+}
+
+请基于当前市场状况和账户情况，输出你的交易决策："""
+    
+    def generate_prompt(self, account, market) -> str:
+        """生成完整的prompt文本"""
+        try:
+            # 获取格式化的市场信息和账户信息
+            market_info = market.format_market_info_for_prompt()
+            account_info = account.format_account_info_for_prompt()
             
-            return json.dumps(obs_dict, ensure_ascii=False, indent=2)
+            # 构建完整prompt
+            prompt = f"""{self.system_prompt}
+
+当前市场信息：
+{market_info}
+
+当前账户信息：
+{account_info}
+
+请分析当前情况并输出你的交易决策（JSON格式）：
+"""
+            return prompt
             
         except Exception as e:
-            self.logger.error(f"Observation转换JSON失败: {e}")
-            return "{}"
+            self.logger.error(f"生成prompt失败: {str(e)}")
+            return self.system_prompt
     
-    def _prepare_model_input(self, observation_json: str) -> str:
-        """准备模型输入"""
-        user_prompt = self.conversation_template["user"].format(
-            observation_json=observation_json
-        )
-        
-        full_prompt = f"System: {self.conversation_template['system']}\n\nUser: {user_prompt}\n\nAssistant:"
-        return full_prompt
-    
-    def _generate_model_output(self, prompt: str) -> str:
-        """模型推理生成输出"""
+    def generate_output(self, prompt: str) -> str:
+        """基于prompt生成输出"""
         try:
-            inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
+            if self.tokenizer is None or self.model is None:
+                raise RuntimeError("模型未正确加载")
             
+            # 构建输入
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt}
+            ]
+            
+            # 格式化输入（根据具体模型调整）
+            if hasattr(self.tokenizer, 'apply_chat_template'):
+                inputs = self.tokenizer.apply_chat_template(
+                    messages,
+                    add_generation_prompt=True,
+                    return_tensors="pt"
+                )
+            else:
+                # 备用方案
+                text = self.system_prompt + "\n\n" + prompt
+                inputs = self.tokenizer(text, return_tensors="pt")
+            
+            # 移动到设备
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
+            # 生成输出
             with torch.no_grad():
                 outputs = self.model.generate(
-                    inputs.input_ids.to(self.model.device),
-                    **self.generation_config
+                    **inputs,
+                    generation_config=self.generation_config
                 )
             
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            # 提取模型新增的回复部分
-            assistant_response = response.split("Assistant:")[-1].strip()
+            # 解码输出
+            generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
-            return assistant_response
+            # 提取模型回复部分（去除输入）
+            if hasattr(self.tokenizer, 'apply_chat_template'):
+                # 对于有chat模板的模型，需要提取assistant的回复
+                response = generated_text.split("assistant\n")[-1].strip()
+            else:
+                # 简单截取最后部分作为回复
+                response = generated_text[len(prompt):].strip()
+            
+            self.logger.debug(f"模型输出: {response[:200]}...")
+            return response
             
         except Exception as e:
-            self.logger.error(f"模型推理失败: {e}")
-            return '{"reasoning": "模型推理失败", "action_type": "NONE"}'
-    
-    def _parse_model_output(self, output: str) -> Dict[str, Any]:
-        """解析模型输出"""
-        try:
-            # 提取JSON部分
-            start_idx = output.find('{')
-            end_idx = output.rfind('}') + 1
-            
-            if start_idx == -1 or end_idx == 0:
-                raise ValueError("未找到有效的JSON输出")
-            
-            json_str = output[start_idx:end_idx]
-            parsed_output = json.loads(json_str)
-            
-            # 验证必需字段
-            if "reasoning" not in parsed_output:
-                parsed_output["reasoning"] = "推理过程未提供"
-            if "action_type" not in parsed_output:
-                parsed_output["action_type"] = "NONE"
-            
-            return parsed_output
-            
-        except (json.JSONDecodeError, ValueError) as e:
-            self.logger.warning(f"解析模型输出失败: {e}, 使用默认无操作")
-            return {
-                "reasoning": f"解析失败: {str(e)}",
+            self.logger.error(f"生成输出失败: {str(e)}")
+            # 返回默认的无操作响应
+            return json.dumps({
+                "reasoning": "系统错误，无法生成交易决策",
                 "action_type": "NONE"
-            }
+            }, ensure_ascii=False)
     
-    def _create_action(self, parsed_output: Dict[str, Any]) -> ActionSpace:
-        """根据解析结果创建Action"""
-        reasoning = parsed_output.get("reasoning", "")
-        action_type = parsed_output.get("action_type", "NONE")
-        
-        if action_type == "ADD_ORDER":
-            order_details = parsed_output.get("order_details", {})
-            
-            # 创建Order对象
-            order_interface = OrderInterface(
-                symbol=order_details.get("symbol", ""),
-                order_type=OrderType(order_details.get("order_type", "BUY")),
-                price=float(order_details.get("price", 0)),
-                quantity=int(order_details.get("quantity", 0)),
-            )
-            
-            return AddOrderAction(
-                reasoning=reasoning,
-                order_interface=order_interface
-            )
-            
-        elif action_type == "CANCEL_ORDER":
-            order_details = parsed_output.get("order_details", {})
-            return CancelOrderAction(
-                reasoning=reasoning,
-                order_id=order_details.get("order_id", "")
-            )
-        
-        else:  # NONE 或其他未知类型
-            return NoneAction(
-                reasoning=reasoning
-            )
-    
-    def generate_action(self, observation: ObervationSpace) -> Dict[str, Any]:
-        """基于状态观察生成动作"""
+    def parse_action(self, output: str) -> List[ActionSchemaUnion]:
+        """解析输出文本为动作列表"""
         try:
-            # 第一步：准备系统提示词
-            self.logger.info("准备系统提示词和对话模板")
+            actions = []
             
-            # 第二步：转换observation为JSON
-            self.logger.info("转换observation为JSON格式")
-            observation_json = self._observation_to_json(observation)
+            # 尝试从输出中提取所有JSON对象
+            json_objects = self._extract_json_objects(output)
             
-            # 第三步：准备模型输入
-            prompt = self._prepare_model_input(observation_json)
+            if not json_objects:
+                self.logger.warning("输出中未找到有效的JSON格式")
+                # 返回默认的无操作
+                return [NoneActionSchema(
+                    reasoning="输出格式错误，无法解析",
+                    action_type=ActionType.NONE
+                )]
             
-            # 第四步：模型推理
-            self.logger.info("开始模型推理")
-            model_output = self._generate_model_output(prompt)
+            for json_obj in json_objects:
+                try:
+                    action = self._parse_single_action(json_obj)
+                    if action:
+                        actions.append(action)
+                except Exception as e:
+                    self.logger.warning(f"解析单个动作失败: {str(e)}")
+                    continue
             
-            # 第五步：解析输出
-            self.logger.info("解析模型输出")
-            parsed_output = self._parse_model_output(model_output)
+            # 如果没有有效动作，返回无操作
+            if not actions:
+                actions.append(NoneActionSchema(
+                    reasoning="未找到有效交易决策",
+                    action_type=ActionType.NONE
+                ))
             
-            # 第六步：创建Action
-            self.logger.info("创建Action对象")
-            action = self._create_action(parsed_output)
-            
-            self.logger.info(f"决策完成: {action.action_type}")
-            return action.dict()
+            self.logger.info(f"成功解析 {len(actions)} 个动作")
+            return actions
             
         except Exception as e:
-            self.logger.error(f"生成动作失败: {e}")
-            # 返回无操作作为降级方案
-            none_action = NoneAction(
-                reasoning=f"决策过程异常: {str(e)}"
-            )
-            return none_action.dict()
+            self.logger.error(f"解析动作失败: {str(e)}")
+            # 返回默认的无操作
+            return [NoneActionSchema(
+                reasoning=f"动作解析失败: {str(e)}",
+                action_type=ActionType.NONE
+            )]
+    
+    def _extract_json_objects(self, text: str) -> List[Dict[str, Any]]:
+        """从文本中提取所有JSON对象"""
+        json_objects = []
+        
+        # 方法1: 尝试解析整个文本为JSON数组
+        try:
+            data = json.loads(text)
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict):
+                return [data]
+        except:
+            pass
+        
+        # 方法2: 使用正则表达式查找JSON对象
+        json_pattern = r'\{[^{}]*"[^"]*"[^{}]*\}'
+        matches = re.finditer(json_pattern, text, re.DOTALL)
+        
+        for match in matches:
+            try:
+                json_str = match.group()
+                # 清理可能的格式问题
+                json_str = re.sub(r',\s*}', '}', json_str)  # 修复尾随逗号
+                json_str = re.sub(r',\s*]', ']', json_str)
+                
+                json_obj = json.loads(json_str)
+                json_objects.append(json_obj)
+            except:
+                continue
+        
+        return json_objects
+    
+    def _parse_single_action(self, data: Dict[str, Any]) -> Optional[ActionSchemaUnion]:
+        """解析单个动作"""
+        if not isinstance(data, dict):
+            return None
+        
+        action_type_str = data.get('action_type', '').upper()
+        reasoning = data.get('reasoning', '')
+        
+        try:
+            if action_type_str == ActionType.ADD_ORDER.value:
+                # 解析下单动作
+                order_data = data.get('order_form', data)  # 兼容两种格式
+                
+                order_form = OrderFormSchema(
+                    symbol=str(order_data.get('symbol', '')),
+                    order_type=OrderType(order_data.get('order_type', 'BUY')),
+                    price=float(order_data.get('price', 0)),
+                    quantity=float(order_data.get('quantity', 0))
+                )
+                
+                # 验证订单数据
+                if order_form.quantity <= 0 or order_form.price <= 0:
+                    raise ValueError("价格和数量必须大于0")
+                
+                return AddOrderActionSchema(
+                    reasoning=reasoning,
+                    action_type=ActionType.ADD_ORDER,
+                    order_form=order_form
+                )
+                
+            elif action_type_str == ActionType.CANCEL_ORDER.value:
+                # 解析取消订单动作
+                order_id = data.get('order_id')
+                if not order_id:
+                    raise ValueError("取消订单必须提供order_id")
+                
+                return CancelOrderActionSchema(
+                    reasoning=reasoning,
+                    action_type=ActionType.CANCEL_ORDER,
+                    order_id=str(order_id)
+                )
+                
+            elif action_type_str == ActionType.NONE.value:
+                # 无操作
+                return NoneActionSchema(
+                    reasoning=reasoning,
+                    action_type=ActionType.NONE
+                )
+                
+            else:
+                self.logger.warning(f"未知的操作类型: {action_type_str}")
+                return None
+                
+        except Exception as e:
+            self.logger.warning(f"解析动作数据失败: {str(e)}, 数据: {data}")
+            return None
+    
+    def generate_complete_actions(self, account, market) -> Tuple[str, str, List[ActionSchemaUnion]]:
+        """完整的动作生成流程"""
+        try:
+            # 生成prompt
+            prompt = self.generate_prompt(account, market)
+            
+            # 生成输出
+            output = self.generate_output(prompt)
+            
+            # 解析动作
+            actions = self.parse_action(output)
+            
+            self.logger.info(f"成功生成 {len(actions)} 个动作")
+            return prompt, output, actions
+            
+        except Exception as e:
+            self.logger.error(f"完整动作生成流程失败: {str(e)}")
+            # 返回错误情况下的默认响应
+            error_prompt = self.generate_prompt(account, market)
+            error_output = json.dumps({
+                "reasoning": f"动作生成失败: {str(e)}",
+                "action_type": "NONE"
+            }, ensure_ascii=False)
+            error_actions = [NoneActionSchema(
+                reasoning=f"动作生成失败: {str(e)}",
+                action_type=ActionType.NONE
+            )]
+            
+            return error_prompt, error_output, error_actions
+    
+    def update_learning(self, traces: List[Dict[str, Any]]) -> None:
+        """根据交互轨迹更新Agent学习状态"""
+        # 这里可以实现模型微调逻辑
+        # 由于本地模型微调需要大量计算资源，这里先留空
+        self.logger.info(f"收到 {len(traces)} 条训练轨迹，本地模型暂不支持在线学习")
+    
+    def get_model_info(self) -> Dict[str, Any]:
+        """获取模型信息"""
+        return {
+            "model_path": self.model_path,
+            "device": self.device,
+            "temperature": self.temperature,
+            "max_new_tokens": self.max_new_tokens,
+            "model_loaded": self.model is not None,
+            "tokenizer_loaded": self.tokenizer is not None
+        }
+
+
+class ActionParseError(Exception):
+    """动作解析异常"""
+    pass

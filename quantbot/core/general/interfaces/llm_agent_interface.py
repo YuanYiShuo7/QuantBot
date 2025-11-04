@@ -1,8 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
-from ..types.action_types import ActionSpace
-from ..types.obervation_types import ObervationSpace
+from ..schemas.action_schema import ActionSchemaUnion
 
 
 class LLMAgentInterface(ABC):
@@ -17,21 +16,45 @@ class LLMAgentInterface(ABC):
         pass
     
     @abstractmethod
-    def generate_action(self, observation: Dict[str, Any]) -> Dict[str, Any]:
-        """基于状态观察生成动作
+    def generate_prompt(self, account, market) -> str:
+        """生成完整的prompt文本
         Args:
-            state_observation: 状态观察信息
+            account: 账户信息
+            market: 市场信息
         Returns:
-            Dict[str, Any]: 动作决策，包含动作类型、标的、数量等
+            str: 完整的prompt文本
         """
         pass
     
     @abstractmethod
-    def update_learning(self, rewards):
-        """根据奖励信号更新Agent学习状态
+    def generate_output(self, prompt: str) -> str:
+        """基于prompt生成输出和掩码
         Args:
-            rewards: 奖励值列表
-            next_state: 下一状态观察
-            done: 是否结束episode
+            prompt: 输入prompt文本
+        Returns:
+            str: 模型输出文本
+        """
+        pass
+    
+    @abstractmethod
+    def parse_action(self, output: str) -> List[ActionSchemaUnion]:
+        """解析输出文本为动作
+        Args:
+            output: 模型输出文本
+        Returns:
+            ActionSchemaUnion: 解析后的动作对象
+        Raises:
+            ActionParseError: 当解析失败时
+        """
+        pass
+    
+    @abstractmethod
+    def update_learning(self, traces: List[Dict[str, Any]]) -> None:
+        """根据交互轨迹更新Agent学习状态
+        Args:
+            traces: 交互轨迹列表，每个元素包含:
+                - prompt: 输入prompt
+                - output: 模型输出
+                - rewards: 奖励值列表
         """
         pass
