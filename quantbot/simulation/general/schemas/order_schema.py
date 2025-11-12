@@ -5,10 +5,10 @@ from enum import Enum
 
 class OrderStatus(str, Enum):
     """订单状态枚举"""
-    PENDING = "pending"
-    SUCCESS = "success"
-    FAILED = "failed"
-    EXPIRED = "expired"
+    PENDING = "PENDING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    EXPIRED = "EXPIRED"
 
 class OrderType(str, Enum):
     """订单类型枚举"""
@@ -121,43 +121,3 @@ class OrderResultSchema(BaseModel):
         if v is not None and v < 0:
             raise ValueError('成交金额不能为负数')
         return v
-
-    class Config:
-        schema_extra = {
-            "examples": {
-                "success": {
-                    "order_id": "ORD_123456",
-                    "symbol": "000001",
-                    "order_type": "BUY",
-                    "status": "success",
-                    "timestamp": "2024-01-15T09:30:00",
-                    "executed_quantity": 100,
-                    "executed_price": 12.45,
-                    "executed_amount": 1245.0,
-                    "commission": 3.74,
-                    "stamp_duty": 0.0,  # 买入免印花税
-                    "transfer_fee": 0.1,
-                    "total_fee": 3.84,
-                    "net_amount": 1248.84,
-                    "error_message": None,
-                    "error_code": None
-                },
-                "failed": {
-                    "order_id": "ORD_123457",
-                    "symbol": "000002",
-                    "order_type": "SELL",
-                    "status": "failed",
-                    "timestamp": "2024-01-15T09:31:00",
-                    "executed_quantity": None,
-                    "executed_price": None,
-                    "executed_amount": None,
-                    "commission": None,
-                    "stamp_duty": None,
-                    "transfer_fee": None,
-                    "total_fee": None,
-                    "net_amount": None,
-                    "error_message": "资金不足",
-                    "error_code": "INSUFFICIENT_FUNDS"
-                }
-            }
-        }

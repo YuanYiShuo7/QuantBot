@@ -47,6 +47,10 @@ class LLMAgentInterface(ABC):
             ActionParseError: 当解析失败时
         """
         pass
+
+    @abstractmethod
+    def generate_pipeline(self, account, market) -> Tuple[str, str, List[ActionSchemaUnion]]:
+        pass
     
     @abstractmethod
     def update_learning(self, traces: List[Dict[str, Any]]) -> None:

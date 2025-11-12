@@ -349,7 +349,7 @@ A股交易规则：
             self.logger.warning(f"解析动作数据失败: {str(e)}, 数据: {data}")
             return None
     
-    def generate_complete_actions(self, account, market) -> Tuple[str, str, List[ActionSchemaUnion]]:
+    def generate_pipeline(self, account, market) -> Tuple[str, str, List[ActionSchemaUnion]]:
         """完整的动作生成流程"""
         try:
             # 生成prompt
