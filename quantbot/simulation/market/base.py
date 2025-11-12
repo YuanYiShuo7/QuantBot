@@ -47,9 +47,6 @@ class Market(MarketInterface):
         self._weekly_data_cache: Dict[str, pd.DataFrame] = {}
         self._monthly_data_cache: Dict[str, pd.DataFrame] = {}
         
-        # 当前时间指针
-        self._current_timestamp = self.start_timestamp
-        
         # 日志
         self.logger = logging.getLogger(__name__)
         
@@ -244,11 +241,6 @@ class Market(MarketInterface):
         从本地缓存加载市场数据并更新 MarketSchema
         """
         try:
-            if timestamp is None:
-                timestamp = self._current_timestamp
-            
-            self._current_timestamp = timestamp
-            
             # 更新市场状态
             market_status = self._get_market_status(timestamp)
             self.market.market_status = market_status
@@ -764,20 +756,63 @@ class Market(MarketInterface):
             self.logger.error(f"格式化市场信息失败: {str(e)}")
             return f"Market data formatting failed: {str(e)}"
     
-    def get_next_timestamp(self) -> datetime:
-        """获取下一个时间戳"""
-        next_timestamp = self._current_timestamp + self.step_interval
-        # 确保不会超过结束时间
-        if self.end_timestamp and next_timestamp > self.end_timestamp:
-            return self.end_timestamp
-        return next_timestamp
-    
-    def has_next_data(self) -> bool:
-        """检查是否还有后续数据"""
-        return self._current_timestamp < self.end_timestamp
-    
-    def reset_to_start(self) -> None:
-        """重置到起始时间"""
-        self._current_timestamp = self.start_timestamp
-        self.market = self._initialize_market()
-        self.logger.info("市场数据已重置到起始时间")
+    def get_next_trading_day(self, current_timestamp: datetime) -> Optional[datetime]:
+        """
+        获取下一个交易日
+        
+        Args:
+            current_timestamp: 当前时间戳
+            
+        Returns:
+            下一个交易日的datetime对象，如果没有更多数据则返回None
+        """
+        try:
+            # 使用第一个股票的数据作为交易日历参考
+            if not self.watch_list:
+                self.logger.warning("没有关注的股票，无法确定交易日历")
+                return None
+                
+            symbol = self.watch_list[0]
+            if symbol not in self._daily_data_cache:
+                self.logger.warning(f"股票 {symbol} 的日线数据未缓存")
+                return None
+            
+            daily_data = self._daily_data_cache[symbol]
+            
+            # 确保数据中有日期列
+            if '日期' not in daily_data.columns:
+                self.logger.warning("日线数据中没有日期列")
+                return None
+            
+            # 将日期列转换为datetime对象
+            daily_data = daily_data.copy()
+            daily_data['date_dt'] = pd.to_datetime(daily_data['日期'])
+            
+            # 找到当前日期之后的下一个交易日
+            current_date = pd.to_datetime(current_timestamp.date())
+            future_days = daily_data[daily_data['date_dt'] > current_date]
+            
+            if future_days.empty:
+                self.logger.info("没有更多的交易日数据")
+                return None
+            
+            # 返回下一个交易日
+            next_trading_day = future_days.iloc[0]['date_dt']
+            
+            # 总是设置为决策时间（14:45）
+            next_timestamp = datetime(
+                year=next_trading_day.year,
+                month=next_trading_day.month,
+                day=next_trading_day.day,
+                hour=14,  # 固定为14:45
+                minute=45,
+                second=0,
+                microsecond=0
+            )
+            
+            self.logger.debug(f"下一个交易日: {next_timestamp}")
+            return next_timestamp
+            
+        except Exception as e:
+            self.logger.error(f"获取下一个交易日失败: {str(e)}")
+            return None
