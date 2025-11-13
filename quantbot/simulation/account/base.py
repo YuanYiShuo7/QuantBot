@@ -21,8 +21,9 @@ class Account(AccountInterface):
         self.watch_list = self.config.get('watch_list', [])
         self.market_index_list = self.config.get('market_index_list', [])
         self.start_timestamp = self.config.get('start_timestamp', datetime(2024, 1, 1))
-        # 公共账户对象
-        self.account = self._initialize_account()
+        
+        # 私有账户对象
+        self._account_schema = self._initialize_account_schema()
         
         # 日志
         import logging
@@ -33,7 +34,7 @@ class Account(AccountInterface):
         self.logger.info(f"自选股: {self.watch_list}")
         self.logger.info(f"关注指数: {self.market_index_list}")
     
-    def _initialize_account(self) -> AccountSchema:
+    def _initialize_account_schema(self) -> AccountSchema:
         """初始化账户数据"""
         
         # 初始化账户信息
@@ -57,12 +58,20 @@ class Account(AccountInterface):
             market_index_list=self.market_index_list
         )
     
+    def get_account_schema(self) -> AccountSchema:
+        """获取当前账户的 AccountSchema 对象"""
+        return self._account_schema
+
+    def set_account_schema(self, account_schema: AccountSchema):
+        """设置当前账户的 AccountSchema 对象"""
+        self._account_schema = account_schema
+    
     def format_account_info_for_prompt(self) -> str:
         """
         将账户信息 AccountSchema 完整转换为 Agent 的 Prompt 文本
         """
         try:
-            account = self.account
+            account = self._account_schema
             
             prompt_lines = [
                 "=== ACCOUNT DATA ===",

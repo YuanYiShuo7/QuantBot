@@ -27,6 +27,16 @@ class MarketInterface(ABC):
                 - step_interval: 市场实时数据更新时间步长间隔
         """
         pass
+
+    @abstractmethod
+    def get_market_schema(self) -> MarketSchema:
+        """获取当前市场数据的 MarketSchema 对象"""
+        pass
+
+    @abstractmethod 
+    def set_market_schema(self, market_schema: MarketSchema):
+        """设置当前市场数据的 MarketSchema 对象"""
+        pass
     
     @abstractmethod
     def initialize_market_data_cache(self) -> bool:

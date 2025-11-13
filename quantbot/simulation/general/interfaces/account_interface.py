@@ -1,7 +1,5 @@
 from abc import ABC, abstractmethod
 from typing import Tuple, Dict, Any, List, Optional
-from datetime import datetime, timedelta
-from pydantic import BaseModel
 
 from ..schemas.account_schema import AccountSchema
 from ..schemas.order_schema import OrderSchema, OrderFormSchema, OrderResultSchema
@@ -17,6 +15,16 @@ class AccountInterface(ABC):
         Args:
             config: 配置字典，包含账户相关配置参数
         """
+        pass
+
+    @abstractmethod
+    def get_account_schema(self) -> AccountSchema:
+        """获取当前账户的 AccountSchema 对象"""
+        pass
+
+    @abstractmethod
+    def set_account_schema(self, account_schema: AccountSchema):
+        """设置当前账户的 AccountSchema 对象"""
         pass
 
     @abstractmethod

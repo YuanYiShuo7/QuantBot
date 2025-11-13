@@ -97,9 +97,6 @@ class OrderResultSchema(BaseModel):
     executed_amount: Optional[float] = Field(None, description="实际成交金额")
     commission: Optional[float] = Field(None, description="手续费")
     
-    # 失败时的错误信息
-    error_message: Optional[str] = Field(None, description="失败错误信息")
-    
     # 验证逻辑
     @validator('executed_quantity')
     def validate_executed_quantity(cls, v, values):
