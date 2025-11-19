@@ -6,6 +6,10 @@ import json
 import re
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 import torch
+import os
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from general.schemas.action_schema import ActionSchemaUnion, AddOrderActionSchema, CancelOrderActionSchema, NoneActionSchema, ActionType
 from general.schemas.order_schema import OrderFormSchema, OrderType
@@ -18,7 +22,7 @@ class LLMAgent(LLMAgentInterface):
         self.logger = logging.getLogger(__name__)
         
         # 模型配置
-        self.model_path = self.config.get('model_path', 'deepseek-ai/DeepSeek-V2')
+        self.model_path = self.config.get('model_path', 'deepseek-ai/DeepSeek-V3')
         self.device = self.config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
         self.temperature = self.config.get('temperature', 0.7)
         self.max_new_tokens = self.config.get('max_new_tokens', 1024)
@@ -378,12 +382,6 @@ A股交易规则：
             )]
             
             return error_prompt, error_output, error_actions
-    
-    def update_learning(self, traces: List[Dict[str, Any]]) -> None:
-        """根据交互轨迹更新Agent学习状态"""
-        # 这里可以实现模型微调逻辑
-        # 由于本地模型微调需要大量计算资源，这里先留空
-        self.logger.info(f"收到 {len(traces)} 条训练轨迹，本地模型暂不支持在线学习")
     
     def get_model_info(self) -> Dict[str, Any]:
         """获取模型信息"""

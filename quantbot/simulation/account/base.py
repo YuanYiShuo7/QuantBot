@@ -5,9 +5,12 @@ import logging
 from pathlib import Path
 import pickle
 
+import os
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
 from general.schemas.account_schema import AccountSchema, AccountData, PositionData
 from general.schemas.order_schema import OrderSchema, OrderFormSchema, OrderResultSchema
-
 from general.interfaces.account_interface import AccountInterface
 
 class Account(AccountInterface):

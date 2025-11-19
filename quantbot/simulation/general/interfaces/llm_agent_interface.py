@@ -50,15 +50,5 @@ class LLMAgentInterface(ABC):
 
     @abstractmethod
     def generate_pipeline(self, account, market) -> Tuple[str, str, List[ActionSchemaUnion]]:
-        pass
-    
-    @abstractmethod
-    def update_learning(self, traces: List[Dict[str, Any]]) -> None:
-        """根据交互轨迹更新Agent学习状态
-        Args:
-            traces: 交互轨迹列表，每个元素包含:
-                - prompt: 输入prompt
-                - output: 模型输出
-                - rewards: 奖励值列表
-        """
+        """生成完整的交互流水线，包括prompt、output和动作列表"""
         pass

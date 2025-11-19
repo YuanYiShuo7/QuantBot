@@ -38,8 +38,8 @@ class Market(MarketInterface):
         # 创建缓存目录
         self.cache_dir.mkdir(exist_ok=True)
         
-        # 公共市场对象
-        self.market = self._initialize_market()
+        # 私有市场对象
+        self._market_schema = self._initialize_market_schema()
         
         # 数据缓存
         self._minute_data_cache: Dict[str, pd.DataFrame] = {}
@@ -55,7 +55,7 @@ class Market(MarketInterface):
         self.logger.info(f"关注股票: {self.watch_list}")
         self.logger.info(f"关注指数: {self.market_index_list}")
     
-    def _initialize_market(self) -> MarketSchema:
+    def _initialize_market_schema(self) -> MarketSchema:
         """初始化市场数据"""
         return MarketSchema(
             timestamp=self.start_timestamp,
@@ -63,6 +63,14 @@ class Market(MarketInterface):
             market_indices={},
             stock_data={}
         )
+    
+    def get_market_schema(self) -> MarketSchema:
+        """获取当前市场数据的 MarketSchema 对象"""
+        return self._market_schema
+    
+    def set_market_schema(self, market_schema: MarketSchema):
+        """设置当前市场数据的 MarketSchema 对象"""
+        self._market_schema = market_schema
     
     def initialize_market_data_cache(self) -> bool:
         """
@@ -243,27 +251,27 @@ class Market(MarketInterface):
         try:
             # 更新市场状态
             market_status = self._get_market_status(timestamp)
-            self.market.market_status = market_status
-            self.market.timestamp = timestamp
+            self._market_schema.market_status = market_status
+            self._market_schema.timestamp = timestamp
             
             # 更新股票数据
             for symbol in self.watch_list:
                 stock_data = self._get_stock_data_at_timestamp(symbol, timestamp)
                 if stock_data:
-                    self.market.stock_data[symbol] = stock_data
+                    self._market_schema.stock_data[symbol] = stock_data
             
             # 更新指数数据
             for index in self.market_index_list:
                 index_data = self._get_index_data_at_timestamp(index, timestamp)
                 if index_data:
-                    self.market.market_indices[index] = index_data
+                    self._market_schema.market_indices[index] = index_data
             
             self.logger.debug(f"市场数据更新完成: {timestamp}")
-            return self.market
+            return self._market_schema
             
         except Exception as e:
             self.logger.error(f"更新市场数据失败: {str(e)}")
-            return self.market
+            return self._market_schema
     
     def _get_market_status(self, timestamp: datetime) -> str:
         """获取市场状态"""
@@ -625,7 +633,7 @@ class Market(MarketInterface):
         包含所有实时数据和K线数据，保持对称性和格式化
         """
         try:
-            market = self.market
+            market = self._market_schema
             
             prompt_lines = [
                 "=== MARKET DATA ===",

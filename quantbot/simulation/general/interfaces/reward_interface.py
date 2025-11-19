@@ -20,14 +20,15 @@ class RewardInterface(ABC):
         pass
     
     @abstractmethod
-    def record_trajectory(self, timestamp: datetime, account: AccountSchema, 
+    def record_trajectory(self, timestamp: datetime, account, 
                          prompt:str, output: str) -> None:
         """记录Agent的决策轨迹
         
         Args:
             timestamp: 决策时间戳
-            account: 账户状态信息
-            interaction: 交互信息，包含prompt和output
+            account: 账户
+            prompt: Agent的输入prompt文本
+            output: Agent的输出文本
         """
         pass
     
@@ -39,7 +40,7 @@ class RewardInterface(ABC):
     
     @abstractmethod
     def persist_data(self) -> bool:
-        """用csv文件持久化轨迹和评分数据
+        """用json文件持久化轨迹和评分数据
         Returns:
             是否成功保存
         """
