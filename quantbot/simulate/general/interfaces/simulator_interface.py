@@ -6,11 +6,11 @@ class SimulatorInterface(ABC):
     """模拟器接口基类"""
     
     @abstractmethod
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, components_config):
         """初始化模拟器
         
         Args:
-            config: 配置参数，包含JSON配置文件路径等
+            components_config: 各个组件的配置参数
         """
         pass
     

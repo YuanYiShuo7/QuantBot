@@ -70,7 +70,7 @@ class Environment(EnvironmentInterface):
                 self.logger.info("今日为交易决策日，执行Agent决策流程")
                 # Agent生成动作
                 prompt, output, actions = llm_agent.generate_pipeline(market, account)
-                self.logger.info(f"Agent生成 {len(actions)} 个动作")
+                self.logger.info(f"Agent Output: {output}")
                 
                 reward.record_trajectory(timestamp, account, prompt, output)
                 self.last_trading_day = timestamp

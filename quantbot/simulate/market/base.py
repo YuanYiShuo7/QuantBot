@@ -3,7 +3,6 @@ from datetime import datetime, timedelta
 import pandas as pd
 import os
 import json
-import pickle
 from pathlib import Path
 import akshare as ak
 import logging
@@ -212,9 +211,16 @@ class Market(MarketInterface):
             raise
     
     def _save_data_to_cache(self, symbol: str, data_type: str, data: pd.DataFrame) -> None:
-        """保存数据到缓存文件"""
-        cache_file = self.cache_dir / f"{symbol}_{data_type}.pkl"
-        data.to_pickle(cache_file)
+        """以JSON格式保存数据到缓存文件"""
+        cache_file = self.cache_dir / f"{symbol}_{data_type}.json"
+        data.to_json(cache_file, orient='records', force_ascii=False)
+
+    def _load_data_from_cache(self, symbol: str, data_type: str) -> Optional[pd.DataFrame]:
+        """从JSON缓存文件加载数据"""
+        cache_file = self.cache_dir / f"{symbol}_{data_type}.json"
+        if cache_file.exists():
+            return pd.read_json(cache_file)
+        return None
     
     def _save_stock_name_mapping(self, symbol: str, name: str) -> None:
         """保存股票名称映射"""
@@ -457,9 +463,9 @@ class Market(MarketInterface):
             data_type = 'daily'
             
             if cache_key not in self._daily_data_cache:
-                cache_file = self.cache_dir / f"{symbol}_{data_type}.pkl"
-                if cache_file.exists():
-                    self._daily_data_cache[cache_key] = pd.read_pickle(cache_file)
+                cached = self._load_data_from_cache(symbol, data_type)
+                if cached is not None:
+                    self._daily_data_cache[cache_key] = cached
                 else:
                     return []
             
@@ -510,9 +516,9 @@ class Market(MarketInterface):
             data_type = 'weekly'
             
             if cache_key not in self._weekly_data_cache:
-                cache_file = self.cache_dir / f"{symbol}_{data_type}.pkl"
-                if cache_file.exists():
-                    self._weekly_data_cache[cache_key] = pd.read_pickle(cache_file)
+                cached = self._load_data_from_cache(symbol, data_type)
+                if cached is not None:
+                    self._weekly_data_cache[cache_key] = cached
                 else:
                     return []
             
@@ -563,9 +569,9 @@ class Market(MarketInterface):
             data_type = 'monthly'
             
             if cache_key not in self._monthly_data_cache:
-                cache_file = self.cache_dir / f"{symbol}_{data_type}.pkl"
-                if cache_file.exists():
-                    self._monthly_data_cache[cache_key] = pd.read_pickle(cache_file)
+                cached = self._load_data_from_cache(symbol, data_type)
+                if cached is not None:
+                    self._monthly_data_cache[cache_key] = cached
                 else:
                     return []
             
