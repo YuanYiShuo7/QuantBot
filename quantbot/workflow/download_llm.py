@@ -1,18 +1,11 @@
 """
-下载 LLM 模型到本地
+下载 LLM 模型到本地（使用 ModelScope）
 """
 import os
 import sys
 from pathlib import Path
 import logging
-
-# 添加项目路径
-script_dir = Path(__file__).parent.resolve()
-quantbot_dir = script_dir.parent.resolve()
-sys.path.insert(0, str(quantbot_dir))
-
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
+import shutil
 
 # 配置日志
 logging.basicConfig(
@@ -21,22 +14,57 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+try:
+    from modelscope import snapshot_download
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    import torch
+except ImportError as e:
+    logger.error(f"导入依赖失败: {e}")
+    logger.info("请安装: pip install modelscope transformers torch")
+    sys.exit(1)
 
-def download_model(model_name: str = 'deepseek-ai/DeepSeek-V3', 
-                   local_dir: str = None):
+
+def check_disk_space(required_gb: int = 20):
+    """检查磁盘空间是否足够"""
+    try:
+        total, used, free = shutil.disk_usage(".")
+        free_gb = free // (2**30)
+        logger.info(f"当前磁盘可用空间: {free_gb}GB")
+        
+        if free_gb < required_gb:
+            logger.warning(f"磁盘空间可能不足！需要约{required_gb}GB，当前仅有{free_gb}GB")
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f"无法检查磁盘空间: {str(e)}")
+        return True
+
+
+def download_model(model_name: str = 'Qwen/Qwen2-7B-Instruct', 
+                   local_dir: str = None,
+                   cache_dir: str = None):
     """
-    下载模型到本地目录
+    使用 ModelScope 下载模型到本地目录
     
     Args:
-        model_name: HuggingFace 模型名称
-        local_dir: 本地保存目录，如果为 None 则使用 quantbot/llm/{model_name}
+        model_name: 模型名称
+        local_dir: 本地保存目录
+        cache_dir: 缓存目录
     """
     try:
+        # 设置默认缓存目录
+        if cache_dir is None:
+            cache_dir = "./quantbot/cache/model_cache"
+        
+        # 设置缓存目录
+        cache_path = Path(cache_dir).resolve()
+        cache_path.mkdir(parents=True, exist_ok=True)
+        os.environ['MODELSCOPE_CACHE'] = str(cache_path)
+        
         # 确定本地保存目录
         if local_dir is None:
-            # 从模型名称提取目录名（去掉 deepseek-ai/ 前缀）
             model_dir_name = model_name.split('/')[-1]
-            local_dir = quantbot_dir / 'llm' / model_dir_name
+            local_dir = Path("./quantbot/llm") / model_dir_name
         else:
             local_dir = Path(local_dir)
         
@@ -45,44 +73,51 @@ def download_model(model_name: str = 'deepseek-ai/DeepSeek-V3',
         
         logger.info(f"开始下载模型: {model_name}")
         logger.info(f"保存目录: {local_dir}")
+        logger.info(f"缓存目录: {cache_path}")
         
-        # 检测 GPU 可用性
-        has_gpu = torch.cuda.is_available()
-        if has_gpu:
-            logger.info(f"检测到 GPU: {torch.cuda.get_device_name(0)}")
-        else:
-            logger.warning("未检测到 GPU，将使用 CPU 模式")
+        # 检查磁盘空间
+        check_disk_space(20)
         
-        # 下载分词器
-        logger.info("正在下载分词器...")
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            trust_remote_code=True
+        # 使用 ModelScope 下载模型
+        logger.info("正在下载模型（使用 ModelScope）...")
+        
+        downloaded_path = snapshot_download(
+            model_id=model_name,
+            cache_dir=str(cache_path),
+            local_dir=str(local_dir),
+            revision='master'
         )
-        tokenizer.save_pretrained(str(local_dir))
-        logger.info("✓ 分词器下载完成")
         
-        # 下载模型（这可能需要较长时间）
-        logger.info("正在下载模型（这可能需要较长时间，请耐心等待）...")
-        logger.info("模型文件较大，请确保网络连接稳定...")
-        
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-            low_cpu_mem_usage=True
-        )
-        model.save_pretrained(str(local_dir))
         logger.info("✓ 模型下载完成")
         
-        logger.info(f"\n模型已成功下载到: {local_dir}")
-        logger.info(f"使用本地模型时，请将 model_path 设置为: {local_dir}")
+        # 验证模型文件
+        logger.info("验证模型文件...")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                str(local_dir),
+                trust_remote_code=True
+            )
+            logger.info("✓ 分词器加载成功")
+            
+            model = AutoModelForCausalLM.from_pretrained(
+                str(local_dir),
+                trust_remote_code=True,
+                torch_dtype=torch.float16,
+                low_cpu_mem_usage=True
+            )
+            logger.info("✓ 模型加载成功")
+            
+            total_params = sum(p.numel() for p in model.parameters())
+            logger.info(f"模型参数量: {total_params / 1e9:.1f}B")
+            
+        except Exception as e:
+            logger.warning(f"模型验证警告: {str(e)}")
         
+        logger.info(f"🎉 模型已成功下载到: {local_dir}")
         return str(local_dir)
         
     except Exception as e:
         logger.error(f"下载模型失败: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise
 
 
@@ -90,38 +125,52 @@ def main():
     """主函数"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='下载 DeepSeek-V3 模型')
+    parser = argparse.ArgumentParser(description='使用 ModelScope 下载模型')
     parser.add_argument(
         '--model',
         type=str,
-        default='deepseek-ai/DeepSeek-V3',
-        help='要下载的模型名称（默认: deepseek-ai/DeepSeek-V3）'
+        default='Qwen/Qwen2-1.5B-Instruct',
+        help='要下载的模型名称'
     )
     parser.add_argument(
         '--local-dir',
         type=str,
         default=None,
-        help='本地保存目录（默认: quantbot/llm/{model_name}）'
+        help='本地保存目录（默认: ./quantbot/llm/{模型名}）'
+    )
+    parser.add_argument(
+        '--cache-dir', 
+        type=str,
+        default=None,
+        help='缓存目录（默认: ./quantbot/cache/model_cache）'
     )
     
     args = parser.parse_args()
     
-    print("=" * 60)
-    print("DeepSeek-V3 模型下载工具")
-    print("=" * 60)
-    print(f"模型: {args.model}")
-    if args.local_dir:
-        print(f"保存目录: {args.local_dir}")
+    # 构建完整的保存路径
+    if args.local_dir is None:
+        model_dir_name = args.model.split('/')[-1]
+        full_local_dir = f"./quantbot/llm/{model_dir_name}"
     else:
-        print(f"保存目录: quantbot/llm/{args.model.split('/')[-1]}")
-    print("=" * 60)
-    print()
+        full_local_dir = args.local_dir
+    
+    # 构建缓存路径
+    if args.cache_dir is None:
+        full_cache_dir = "./quantbot/cache/model_cache"
+    else:
+        full_cache_dir = args.cache_dir
+    
+    print("=" * 50)
+    print("ModelScope 模型下载工具")
+    print("=" * 50)
+    print(f"模型: {args.model}")
+    print(f"保存目录: {full_local_dir}")
+    print(f"缓存目录: {full_cache_dir}")
+    print("=" * 50)
     
     try:
-        download_model(args.model, args.local_dir)
-        print("\n" + "=" * 60)
-        print("下载完成！")
-        print("=" * 60)
+        download_model(args.model, args.local_dir, args.cache_dir)
+        print("\n🎉 下载完成！")
     except Exception as e:
         print(f"\n❌ 下载失败: {str(e)}")
         sys.exit(1)
@@ -129,4 +178,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

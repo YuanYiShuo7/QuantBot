@@ -14,6 +14,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from general.schemas.action_schema import ActionSchemaUnion, AddOrderActionSchema, CancelOrderActionSchema, NoneActionSchema, ActionType
 from general.schemas.order_schema import OrderFormSchema, OrderType
 from general.interfaces.llm_agent_interface import LLMAgentInterface
+from account.base import Account
+from market.base import Market
+
 class LLMAgent(LLMAgentInterface):
     """默认LLM Agent实现类 - 使用HuggingFace本地模型"""
     
@@ -49,6 +52,10 @@ class LLMAgent(LLMAgentInterface):
                 trust_remote_code=True
             )
             
+            # 如果分词器没有pad_token，设置为eos_token
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            
             # 加载模型
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
@@ -62,7 +69,8 @@ class LLMAgent(LLMAgentInterface):
                 temperature=self.temperature,
                 max_new_tokens=self.max_new_tokens,
                 do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id
             )
             
             self.logger.info("模型加载完成")
@@ -88,6 +96,7 @@ A股交易规则：
 
 输出要求：
 - 必须使用JSON格式输出
+- 仅按照示例输出JSON代码块，不包含任何其他文本
 - 可以同时执行多个订单操作
 - 每个操作必须是独立的JSON对象
 - 确保所有数值字段类型正确
@@ -141,7 +150,7 @@ A股交易规则：
 
 请基于当前市场状况和账户情况，输出你的交易决策："""
     
-    def generate_prompt(self, account, market) -> str:
+    def generate_prompt(self, account: Account, market: Market) -> str:
         """生成完整的prompt文本"""
         try:
             # 获取格式化的市场信息和账户信息
@@ -165,61 +174,58 @@ A股交易规则：
             self.logger.error(f"生成prompt失败: {str(e)}")
             return self.system_prompt
     
-    def generate_output(self, prompt: str) -> str:
-        """基于prompt生成输出"""
-        try:
-            if self.tokenizer is None or self.model is None:
-                raise RuntimeError("模型未正确加载")
-            
-            # 构建输入
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt}
-            ]
-            
-            # 格式化输入（根据具体模型调整）
-            if hasattr(self.tokenizer, 'apply_chat_template'):
-                inputs = self.tokenizer.apply_chat_template(
-                    messages,
-                    add_generation_prompt=True,
-                    return_tensors="pt"
-                )
-            else:
-                # 备用方案
-                text = self.system_prompt + "\n\n" + prompt
-                inputs = self.tokenizer(text, return_tensors="pt")
-            
-            # 移动到设备
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-            
-            # 生成输出
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    generation_config=self.generation_config
-                )
-            
-            # 解码输出
-            generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # 提取模型回复部分（去除输入）
-            if hasattr(self.tokenizer, 'apply_chat_template'):
-                # 对于有chat模板的模型，需要提取assistant的回复
-                response = generated_text.split("assistant\n")[-1].strip()
-            else:
-                # 简单截取最后部分作为回复
-                response = generated_text[len(prompt):].strip()
-            
-            self.logger.debug(f"模型输出: {response[:200]}...")
-            return response
-            
-        except Exception as e:
-            self.logger.error(f"生成输出失败: {str(e)}")
-            # 返回默认的无操作响应
-            return json.dumps({
-                "reasoning": "系统错误，无法生成交易决策",
-                "action_type": "NONE"
-            }, ensure_ascii=False)
+def generate_output(self, prompt: str) -> str:
+    """基于prompt生成输出 - 单轮对话模式（简化版）"""
+    try:
+        if self.tokenizer is None or self.model is None:
+            raise RuntimeError("模型未正确加载")
+        
+        # 直接构建Qwen2对话格式
+        text = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+        
+        # 对完整文本进行编码
+        inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=2048)
+        
+        # 移动到设备
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        
+        # 生成配置
+        generation_config = {
+            "max_new_tokens": 512,
+            "do_sample": True,
+            "temperature": 0.9,
+            "top_p": 0.9,
+            "pad_token_id": self.tokenizer.eos_token_id,  # Qwen2使用eos_token作为pad_token
+            "eos_token_id": self.tokenizer.eos_token_id,
+        }
+        
+        # 生成输出
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                **generation_config
+            )
+        
+        # 解码输出
+        generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # 提取模型回复部分（去除输入）
+        response = generated_text[len(text):].strip()
+        
+        # 如果响应以<|im_end|>结尾，移除它
+        if response.endswith("<|im_end|>"):
+            response = response[:-10].strip()
+        
+        self.logger.debug(f"模型原始输出: {response[:200]}...")
+        return response
+        
+    except Exception as e:
+        self.logger.error(f"生成输出失败: {str(e)}")
+        # 返回默认的无操作响应
+        return json.dumps({
+            "reasoning": f"系统错误，无法生成交易决策: {str(e)}",
+            "action_type": "NONE"
+        }, ensure_ascii=False)
     
     def parse_action(self, output: str) -> List[ActionSchemaUnion]:
         """解析输出文本为动作列表"""
@@ -279,7 +285,8 @@ A股交易规则：
             pass
         
         # 方法2: 使用正则表达式查找JSON对象
-        json_pattern = r'\{[^{}]*"[^"]*"[^{}]*\}'
+        # 改进的正则表达式，更好地匹配嵌套结构
+        json_pattern = r'\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\}'
         matches = re.finditer(json_pattern, text, re.DOTALL)
         
         for match in matches:
@@ -291,7 +298,11 @@ A股交易规则：
                 
                 json_obj = json.loads(json_str)
                 json_objects.append(json_obj)
-            except:
+            except json.JSONDecodeError as e:
+                self.logger.debug(f"JSON解析失败: {str(e)}，跳过该对象")
+                continue
+            except Exception as e:
+                self.logger.debug(f"处理JSON对象失败: {str(e)}")
                 continue
         
         return json_objects
@@ -309,16 +320,40 @@ A股交易规则：
                 # 解析下单动作
                 order_data = data.get('order_form', data)  # 兼容两种格式
                 
-                order_form = OrderFormSchema(
-                    symbol=str(order_data.get('symbol', '')),
-                    order_type=OrderType(order_data.get('order_type', 'BUY')),
-                    price=float(order_data.get('price', 0)),
-                    quantity=float(order_data.get('quantity', 0))
-                )
+                symbol = str(order_data.get('symbol', ''))
+                order_type_str = order_data.get('order_type', 'BUY').upper()
+                price = float(order_data.get('price', 0))
+                quantity = int(order_data.get('quantity', 0))
                 
-                # 验证订单数据
-                if order_form.quantity <= 0 or order_form.price <= 0:
-                    raise ValueError("价格和数量必须大于0")
+                # 验证必需字段
+                if not symbol:
+                    raise ValueError("股票代码不能为空")
+                
+                # 验证订单类型
+                try:
+                    order_type = OrderType(order_type_str)
+                except ValueError:
+                    raise ValueError(f"无效的订单类型: {order_type_str}")
+                
+                # 验证价格和数量
+                if price <= 0:
+                    raise ValueError("价格必须大于0")
+                if quantity <= 0:
+                    raise ValueError("数量必须大于0")
+                
+                # 验证数量是否为100的整数倍
+                if quantity % 100 != 0:
+                    self.logger.warning(f"数量 {quantity} 不是100的整数倍，已自动调整")
+                    quantity = (quantity // 100) * 100
+                    if quantity == 0:
+                        quantity = 100  # 最小交易单位
+                
+                order_form = OrderFormSchema(
+                    symbol=symbol,
+                    order_type=order_type,
+                    price=round(price, 2),  # 保留2位小数
+                    quantity=quantity
+                )
                 
                 return AddOrderActionSchema(
                     reasoning=reasoning,
@@ -358,9 +393,11 @@ A股交易规则：
         try:
             # 生成prompt
             prompt = self.generate_prompt(account, market)
+            self.logger.debug(f"生成的prompt长度: {len(prompt)}")
             
             # 生成输出
             output = self.generate_output(prompt)
+            self.logger.debug(f"模型输出长度: {len(output)}")
             
             # 解析动作
             actions = self.parse_action(output)
@@ -371,7 +408,7 @@ A股交易规则：
         except Exception as e:
             self.logger.error(f"完整动作生成流程失败: {str(e)}")
             # 返回错误情况下的默认响应
-            error_prompt = self.generate_prompt(account, market)
+            error_prompt = self.generate_prompt(account, market) if account and market else "Error generating prompt"
             error_output = json.dumps({
                 "reasoning": f"动作生成失败: {str(e)}",
                 "action_type": "NONE"
@@ -391,7 +428,8 @@ A股交易规则：
             "temperature": self.temperature,
             "max_new_tokens": self.max_new_tokens,
             "model_loaded": self.model is not None,
-            "tokenizer_loaded": self.tokenizer is not None
+            "tokenizer_loaded": self.tokenizer is not None,
+            "model_device": self.model.device if self.model else None
         }
 
 

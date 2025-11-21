@@ -49,27 +49,20 @@ class Environment(EnvironmentInterface):
         Returns:
             bool: 是否达到终止条件
         """
-        try:
-            # 1. 推进时间步长
-            if (timer.step(market)):
-                self.logger.info("达到终止条件，结束交易环境步骤")
-                return True
-            
+        try:   
             timestamp = timer.get_current_timestamp()
             self.logger.info(f"当前时间戳: {timestamp}")
             
             
-            # 2. 更新市场数据
             self.logger.info("更新市场数据...")
             market.update_market_from_data_cache(timestamp)
 
-            # 3. 检查是否到了交易决策日
             self.should_trade = self._should_trade_today(timestamp)
             
             if self.should_trade:
                 self.logger.info("今日为交易决策日，执行Agent决策流程")
                 # Agent生成动作
-                prompt, output, actions = llm_agent.generate_pipeline(market, account)
+                prompt, output, actions = llm_agent.generate_pipeline(account, market)
                 self.logger.info(f"Agent Output: {output}")
                 
                 reward.record_trajectory(timestamp, account, prompt, output)
@@ -80,7 +73,6 @@ class Environment(EnvironmentInterface):
                     self.logger.info("向交易所提交订单...")
                     exchange.update_orders(actions, account, timestamp)
             
-            # 4. Exchange执行订单并更新信息
             self.logger.info("执行订单检查...")
             order_results = exchange.check_and_execute_orders(market, account, timestamp)
             
@@ -89,6 +81,11 @@ class Environment(EnvironmentInterface):
                     self.logger.info(f"订单 {result.order_id} 执行结果: {result.status}")
 
             self.logger.info(f"时间步完成: {timestamp}")
+
+            if (timer.step(market)):
+                self.logger.info("达到终止条件，结束交易环境步骤")
+                return True
+            
             return False
             
         except Exception as e:

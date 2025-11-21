@@ -45,4 +45,3 @@ python quantbot/workflow/download_llm.py --model deepseek-ai/DeepSeek-V3 --local
 - 首次下载需要稳定的网络连接
 - 如果使用 CPU 模式，请添加 `--use-cpu` 参数
 - 模型文件不会被 Git 跟踪，需要手动管理
-

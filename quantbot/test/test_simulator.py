@@ -27,12 +27,7 @@ def create_test_config():
     
     # 测试股票和指数（使用常见的A股代码）
     watch_list = ['000858']  # 五粮液
-    market_index_list = ['000001']  # 上证指数
-    
-    # 使用 pathlib.Path 构建路径（支持使用 / 分隔符，自动处理跨平台兼容）
-    # 转换为字符串时，Windows 会自动转换为 \，但使用 / 也不会报错
-    script_dir = Path(__file__).parent.resolve()
-    quantbot_dir = script_dir.parent
+    market_index_list = []
     
     config = {
         # 环境配置
@@ -56,7 +51,7 @@ def create_test_config():
         
         # 市场配置
         'market': {
-            'cache_dir': str(quantbot_dir / 'cache' / 'market_cache'),  # 使用 pathlib 构建路径
+            'cache_dir': 'quantbot/cache/market_cache',
             'watch_list': watch_list,
             'market_index_list': market_index_list,
             'start_timestamp': start_timestamp,
@@ -76,15 +71,15 @@ def create_test_config():
         
         # LLM Agent配置（使用较小的模型或本地模型）
         'llm_agent': {
-            'model_path': str(quantbot_dir / 'llm' / 'DeepSeek-V3'),  # 使用 pathlib 构建路径
-            'device': 'cpu',  # 测试时使用CPU，避免GPU内存问题
+            'model_path': 'quantbot/llm/Qwen2-1.5B-Instruct',  # 使用 pathlib 构建路径
+            'device': 'auto',
             'temperature': 0.7,
             'max_new_tokens': 512,  # 减少生成长度以加快测试
         },
         
         # 奖励系统配置
         'reward': {
-            'persist_path': str(quantbot_dir / 'trajectory' / 'test_trajectories.json'),  # 使用 pathlib 构建路径
+            'persist_path': 'quantbot/trajectory/test_trajectories.json',  # 使用 pathlib 构建路径
         },
     }
     

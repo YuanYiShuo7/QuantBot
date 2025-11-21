@@ -4,3 +4,7 @@ pydantic
 transformers>=4.44.0
 torch>=2.1.0
 accelerate
+modelscope 
+peft 
+datasets
+trl

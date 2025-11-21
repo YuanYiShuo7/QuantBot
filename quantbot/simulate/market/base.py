@@ -39,12 +39,15 @@ class Market(MarketInterface):
         
         # 私有市场对象
         self._market_schema = self._initialize_market_schema()
-        
+
         # 数据缓存
-        self._minute_data_cache: Dict[str, pd.DataFrame] = {}
         self._daily_data_cache: Dict[str, pd.DataFrame] = {}
         self._weekly_data_cache: Dict[str, pd.DataFrame] = {}
         self._monthly_data_cache: Dict[str, pd.DataFrame] = {}
+        
+        # 名称映射缓存
+        self._stock_names: Dict[str, str] = {}
+        self._index_names: Dict[str, str] = {}
         
         # 日志
         self.logger = logging.getLogger(__name__)
@@ -53,6 +56,12 @@ class Market(MarketInterface):
         self.logger.info(f"时间范围: {self.start_timestamp} 到 {self.end_timestamp}")
         self.logger.info(f"关注股票: {self.watch_list}")
         self.logger.info(f"关注指数: {self.market_index_list}")
+
+        # 先加载名称映射
+        self._load_name_mappings()
+        
+        # 初始化数据缓存
+        self.initialize_market_data_cache()
     
     def _initialize_market_schema(self) -> MarketSchema:
         """初始化市场数据"""
@@ -71,6 +80,30 @@ class Market(MarketInterface):
         """设置当前市场数据的 MarketSchema 对象"""
         self._market_schema = market_schema
     
+    def _load_name_mappings(self) -> None:
+        """加载名称映射"""
+        # 加载股票名称映射
+        stock_mapping_file = self.cache_dir / "stock_names.json"
+        if stock_mapping_file.exists():
+            try:
+                with open(stock_mapping_file, 'r', encoding='utf-8') as f:
+                    self._stock_names = json.load(f)
+                self.logger.info(f"加载了 {len(self._stock_names)} 个股票名称映射")
+            except Exception as e:
+                self.logger.error(f"加载股票名称映射失败: {str(e)}")
+                self._stock_names = {}
+        
+        # 加载指数名称映射
+        index_mapping_file = self.cache_dir / "index_names.json"
+        if index_mapping_file.exists():
+            try:
+                with open(index_mapping_file, 'r', encoding='utf-8') as f:
+                    self._index_names = json.load(f)
+                self.logger.info(f"加载了 {len(self._index_names)} 个指数名称映射")
+            except Exception as e:
+                self.logger.error(f"加载指数名称映射失败: {str(e)}")
+                self._index_names = {}
+    
     def initialize_market_data_cache(self) -> bool:
         """
         初始化数据缓存 - 通过akshare下载历史数据并存储在本地
@@ -81,18 +114,28 @@ class Market(MarketInterface):
             # 下载股票数据
             for symbol in self.watch_list:
                 try:
-                    self._download_stock_data(symbol)
-                    self.logger.info(f"股票 {symbol} 数据下载完成")
+                    # 检查是否已有缓存数据
+                    if self._is_data_cached(symbol):
+                        self.logger.info(f"股票 {symbol} 数据已存在，跳过下载")
+                        self._load_data_to_cache(symbol)
+                    else:
+                        self._download_stock_data(symbol)
+                        self.logger.info(f"股票 {symbol} 数据下载完成")
                 except Exception as e:
-                    self.logger.error(f"股票 {symbol} 数据下载失败: {str(e)}")
+                    self.logger.error(f"股票 {symbol} 数据处理失败: {str(e)}")
             
             # 下载指数数据
             for index in self.market_index_list:
                 try:
-                    self._download_index_data(index)
-                    self.logger.info(f"指数 {index} 数据下载完成")
+                    # 检查是否已有缓存数据
+                    if self._is_data_cached(index):
+                        self.logger.info(f"指数 {index} 数据已存在，跳过下载")
+                        self._load_data_to_cache(index)
+                    else:
+                        self._download_index_data(index)
+                        self.logger.info(f"指数 {index} 数据下载完成")
                 except Exception as e:
-                    self.logger.error(f"指数 {index} 数据下载失败: {str(e)}")
+                    self.logger.error(f"指数 {index} 数据处理失败: {str(e)}")
             
             self.logger.info("市场数据缓存初始化完成")
             return True
@@ -101,8 +144,40 @@ class Market(MarketInterface):
             self.logger.error(f"市场数据缓存初始化失败: {str(e)}")
             return False
     
+    def _is_data_cached(self, symbol: str) -> bool:
+        """检查数据是否已经缓存"""
+        data_types = ['daily', 'weekly', 'monthly']
+        for data_type in data_types:
+            cache_file = self.cache_dir / f"{symbol}_{data_type}.json"
+            if not cache_file.exists():
+                return False
+        return True
+    
+    def _load_data_to_cache(self, symbol: str) -> None:
+        """将本地缓存数据加载到内存缓存中"""
+        try:
+            # 加载日线数据
+            daily_data = self._load_data_from_cache(symbol, 'daily')
+            if daily_data is not None:
+                self._daily_data_cache[symbol] = daily_data
+            
+            # 加载周线数据
+            weekly_data = self._load_data_from_cache(symbol, 'weekly')
+            if weekly_data is not None:
+                self._weekly_data_cache[symbol] = weekly_data
+            
+            # 加载月线数据
+            monthly_data = self._load_data_from_cache(symbol, 'monthly')
+            if monthly_data is not None:
+                self._monthly_data_cache[symbol] = monthly_data
+                
+            self.logger.debug(f"已加载 {symbol} 的缓存数据到内存")
+            
+        except Exception as e:
+            self.logger.error(f"加载 {symbol} 缓存数据失败: {str(e)}")
+    
     def _download_stock_data(self, symbol: str) -> None:
-        """下载股票数据"""
+        """下载股票数据并持久化到本地"""
         try:
             # 获取股票基本信息
             stock_info = ak.stock_individual_info_em(symbol=symbol)
@@ -119,8 +194,10 @@ class Market(MarketInterface):
                 end_date=daily_end_date,
                 adjust=""
             )
-            self._daily_data_cache[symbol] = daily_data
+            # 先持久化到本地
             self._save_data_to_cache(symbol, 'daily', daily_data)
+            # 再加载到内存缓存
+            self._daily_data_cache[symbol] = daily_data
             
             # 下载周线数据 - 根据周线条目数决定时间范围
             weekly_start_date = (self.start_timestamp - timedelta(weeks=self.weekly_kline_weeks)).strftime('%Y%m%d')
@@ -133,8 +210,10 @@ class Market(MarketInterface):
                 end_date=weekly_end_date,
                 adjust=""
             )
-            self._weekly_data_cache[symbol] = weekly_data
+            # 先持久化到本地
             self._save_data_to_cache(symbol, 'weekly', weekly_data)
+            # 再加载到内存缓存
+            self._weekly_data_cache[symbol] = weekly_data
             
             # 下载月线数据 - 根据月线条目数决定时间范围
             monthly_start_date = (self.start_timestamp - timedelta(days=self.monthly_kline_months * 30)).strftime('%Y%m%d')
@@ -147,8 +226,10 @@ class Market(MarketInterface):
                 end_date=monthly_end_date,
                 adjust=""
             )
-            self._monthly_data_cache[symbol] = monthly_data
+            # 先持久化到本地
             self._save_data_to_cache(symbol, 'monthly', monthly_data)
+            # 再加载到内存缓存
+            self._monthly_data_cache[symbol] = monthly_data
             
             # 保存股票名称映射
             self._save_stock_name_mapping(symbol, stock_name)
@@ -158,7 +239,7 @@ class Market(MarketInterface):
             raise
     
     def _download_index_data(self, index: str) -> None:
-        """下载指数数据"""
+        """下载指数数据并持久化到本地"""
         try:
             # 获取指数名称
             index_info = ak.index_stock_info()
@@ -174,8 +255,10 @@ class Market(MarketInterface):
                 start_date=daily_start_date,
                 end_date=daily_end_date
             )
-            self._daily_data_cache[index] = daily_data
+            # 先持久化到本地
             self._save_data_to_cache(index, 'daily', daily_data)
+            # 再加载到内存缓存
+            self._daily_data_cache[index] = daily_data
             
             # 下载周线数据 - 根据周线条目数决定时间范围
             weekly_start_date = (self.start_timestamp - timedelta(weeks=self.weekly_kline_weeks)).strftime('%Y%m%d')
@@ -187,8 +270,10 @@ class Market(MarketInterface):
                 start_date=weekly_start_date,
                 end_date=weekly_end_date
             )
-            self._weekly_data_cache[index] = weekly_data
+            # 先持久化到本地
             self._save_data_to_cache(index, 'weekly', weekly_data)
+            # 再加载到内存缓存
+            self._weekly_data_cache[index] = weekly_data
             
             # 下载月线数据 - 根据月线条目数决定时间范围
             monthly_start_date = (self.start_timestamp - timedelta(days=self.monthly_kline_months * 30)).strftime('%Y%m%d')
@@ -200,8 +285,10 @@ class Market(MarketInterface):
                 start_date=monthly_start_date,
                 end_date=monthly_end_date
             )
-            self._monthly_data_cache[index] = monthly_data
+            # 先持久化到本地
             self._save_data_to_cache(index, 'monthly', monthly_data)
+            # 再加载到内存缓存
+            self._monthly_data_cache[index] = monthly_data
             
             # 保存指数名称映射
             self._save_index_name_mapping(index, index_name)
@@ -212,43 +299,79 @@ class Market(MarketInterface):
     
     def _save_data_to_cache(self, symbol: str, data_type: str, data: pd.DataFrame) -> None:
         """以JSON格式保存数据到缓存文件"""
-        cache_file = self.cache_dir / f"{symbol}_{data_type}.json"
-        data.to_json(cache_file, orient='records', force_ascii=False)
+        try:
+            cache_file = self.cache_dir / f"{symbol}_{data_type}.json"
+            # 确保数据不为空
+            if data is not None and not data.empty:
+                # 在保存前将日期列转换为字符串格式，避免时间戳问题
+                data_to_save = data.copy()
+                if '日期' in data_to_save.columns:
+                    data_to_save['日期'] = data_to_save['日期'].astype(str)
+                data_to_save.to_json(cache_file, orient='records', force_ascii=False, indent=2)
+                self.logger.debug(f"已保存 {symbol} 的 {data_type} 数据到 {cache_file}")
+            else:
+                self.logger.warning(f"{symbol} 的 {data_type} 数据为空，跳过保存")
+        except Exception as e:
+            self.logger.error(f"保存 {symbol} 的 {data_type} 数据失败: {str(e)}")
 
     def _load_data_from_cache(self, symbol: str, data_type: str) -> Optional[pd.DataFrame]:
         """从JSON缓存文件加载数据"""
-        cache_file = self.cache_dir / f"{symbol}_{data_type}.json"
-        if cache_file.exists():
-            return pd.read_json(cache_file)
-        return None
+        try:
+            cache_file = self.cache_dir / f"{symbol}_{data_type}.json"
+            if cache_file.exists():
+                # 明确指定编码和日期转换
+                data = pd.read_json(cache_file, encoding='utf-8')
+                
+                # 如果日期列是时间戳格式，转换为datetime
+                if '日期' in data.columns:
+                    # 检查是否是时间戳格式（数字）
+                    if pd.api.types.is_numeric_dtype(data['日期']):
+                        # 毫秒时间戳转换为datetime
+                        data['日期'] = pd.to_datetime(data['日期'], unit='ms')
+                    else:
+                        # 尝试作为字符串解析
+                        data['日期'] = pd.to_datetime(data['日期'])
+                
+                self.logger.debug(f"已从缓存加载 {symbol} 的 {data_type} 数据")
+                return data
+            else:
+                self.logger.warning(f"缓存文件不存在: {cache_file}")
+                return None
+        except Exception as e:
+            self.logger.error(f"加载 {symbol} 的 {data_type} 数据失败: {str(e)}")
+            return None
     
     def _save_stock_name_mapping(self, symbol: str, name: str) -> None:
         """保存股票名称映射"""
-        mapping_file = self.cache_dir / "stock_names.json"
-        if mapping_file.exists():
-            with open(mapping_file, 'r') as f:
-                mappings = json.load(f)
-        else:
-            mappings = {}
-        
-        mappings[symbol] = name
-        
-        with open(mapping_file, 'w') as f:
-            json.dump(mappings, f, ensure_ascii=False, indent=2)
+        try:
+            mapping_file = self.cache_dir / "stock_names.json"
+            
+            # 更新内存缓存
+            self._stock_names[symbol] = name
+            
+            # 保存到文件
+            with open(mapping_file, 'w', encoding='utf-8') as f:
+                json.dump(self._stock_names, f, ensure_ascii=False, indent=2)
+            
+            self.logger.debug(f"已保存股票名称映射: {symbol} -> {name}")
+        except Exception as e:
+            self.logger.error(f"保存股票名称映射失败: {str(e)}")
     
     def _save_index_name_mapping(self, index: str, name: str) -> None:
         """保存指数名称映射"""
-        mapping_file = self.cache_dir / "index_names.json"
-        if mapping_file.exists():
-            with open(mapping_file, 'r') as f:
-                mappings = json.load(f)
-        else:
-            mappings = {}
-        
-        mappings[index] = name
-        
-        with open(mapping_file, 'w') as f:
-            json.dump(mappings, f, ensure_ascii=False, indent=2)
+        try:
+            mapping_file = self.cache_dir / "index_names.json"
+            
+            # 更新内存缓存
+            self._index_names[index] = name
+            
+            # 保存到文件
+            with open(mapping_file, 'w', encoding='utf-8') as f:
+                json.dump(self._index_names, f, ensure_ascii=False, indent=2)
+            
+            self.logger.debug(f"已保存指数名称映射: {index} -> {name}")
+        except Exception as e:
+            self.logger.error(f"保存指数名称映射失败: {str(e)}")
     
     def update_market_from_data_cache(self, timestamp: datetime = None) -> MarketSchema:
         """
@@ -405,7 +528,6 @@ class Market(MarketInterface):
                 open=day_kline.open,
                 high=day_kline.high,
                 low=day_kline.low
-
             )
             
         except Exception as e:
@@ -460,13 +582,14 @@ class Market(MarketInterface):
         """获取日K线数据"""
         try:
             cache_key = symbol
-            data_type = 'daily'
             
+            # 确保数据在缓存中
             if cache_key not in self._daily_data_cache:
-                cached = self._load_data_from_cache(symbol, data_type)
+                cached = self._load_data_from_cache(symbol, 'daily')
                 if cached is not None:
                     self._daily_data_cache[cache_key] = cached
                 else:
+                    self.logger.warning(f"日线数据未找到: {symbol}")
                     return []
             
             data = self._daily_data_cache[cache_key]
@@ -474,9 +597,12 @@ class Market(MarketInterface):
             
             # 确保数据中有日期列
             if '日期' not in data.columns:
+                self.logger.warning(f"日线数据中没有日期列: {symbol}")
                 return []
             
             # 将日期列统一转换为datetime对象
+            data = data.copy()
+
             data['date_dt'] = pd.to_datetime(data['日期'])
             
             # 过滤出截止到timestamp的数据
@@ -513,13 +639,14 @@ class Market(MarketInterface):
         """获取周K线数据"""
         try:
             cache_key = symbol
-            data_type = 'weekly'
             
+            # 确保数据在缓存中
             if cache_key not in self._weekly_data_cache:
-                cached = self._load_data_from_cache(symbol, data_type)
+                cached = self._load_data_from_cache(symbol, 'weekly')
                 if cached is not None:
                     self._weekly_data_cache[cache_key] = cached
                 else:
+                    self.logger.warning(f"周线数据未找到: {symbol}")
                     return []
             
             data = self._weekly_data_cache[cache_key]
@@ -527,9 +654,11 @@ class Market(MarketInterface):
             
             # 确保数据中有日期列
             if '日期' not in data.columns:
+                self.logger.warning(f"周线数据中没有日期列: {symbol}")
                 return []
             
             # 将日期列统一转换为datetime对象
+            data = data.copy()
             data['date_dt'] = pd.to_datetime(data['日期'])
             
             # 过滤出截止到timestamp的数据
@@ -566,13 +695,14 @@ class Market(MarketInterface):
         """获取月K线数据"""
         try:
             cache_key = symbol
-            data_type = 'monthly'
             
+            # 确保数据在缓存中
             if cache_key not in self._monthly_data_cache:
-                cached = self._load_data_from_cache(symbol, data_type)
+                cached = self._load_data_from_cache(symbol, 'monthly')
                 if cached is not None:
                     self._monthly_data_cache[cache_key] = cached
                 else:
+                    self.logger.warning(f"月线数据未找到: {symbol}")
                     return []
             
             data = self._monthly_data_cache[cache_key]
@@ -580,9 +710,11 @@ class Market(MarketInterface):
             
             # 确保数据中有日期列
             if '日期' not in data.columns:
+                self.logger.warning(f"月线数据中没有日期列: {symbol}")
                 return []
             
             # 将日期列统一转换为datetime对象
+            data = data.copy()
             data['date_dt'] = pd.to_datetime(data['日期'])
             
             # 过滤出截止到timestamp的数据
@@ -617,21 +749,11 @@ class Market(MarketInterface):
     
     def _get_stock_name(self, symbol: str) -> str:
         """获取股票名称"""
-        mapping_file = self.cache_dir / "stock_names.json"
-        if mapping_file.exists():
-            with open(mapping_file, 'r') as f:
-                mappings = json.load(f)
-                return mappings.get(symbol, f"股票{symbol}")
-        return f"股票{symbol}"
+        return self._stock_names.get(symbol, f"股票{symbol}")
     
     def _get_index_name(self, index: str) -> str:
         """获取指数名称"""
-        mapping_file = self.cache_dir / "index_names.json"
-        if mapping_file.exists():
-            with open(mapping_file, 'r') as f:
-                mappings = json.load(f)
-                return mappings.get(index, f"指数{index}")
-        return f"指数{index}"
+        return self._index_names.get(index, f"指数{index}")
     
     def format_market_info_for_prompt(self) -> str:
         """

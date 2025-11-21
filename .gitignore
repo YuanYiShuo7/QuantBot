@@ -221,3 +221,7 @@ __marimo__/
 # LLM models
 quantbot/llm/**
 !quantbot/llm/README.md
+
+# Trajectory files
+quantbot/trajectory/**
+!quantbot/trajectory/README.md
