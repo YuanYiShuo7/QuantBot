@@ -1,17 +1,18 @@
 from textwrap import dedent
-from typing import Dict, Any, Optional
-from datetime import datetime
+from typing import Dict, Any, Optional, List
+from datetime import datetime, timedelta
 import json
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
+import akshare as ak
 
 from libs.agno.agent import Agent
 from libs.agno.db.sqlite import SqliteDb
 from libs.agno.models.openai import OpenAIChat
 from libs.agno.run import RunContext
 
-from general.schemas.account_schema import AccountSchema, AccountData, PositionData
+from general.schemas.account_schema import AccountSchema, AccountData, PositionData, OrderSchema, OrderStatus
 from tools.order_tools import OrderTools 
 from tools.watchlist_tools import WatchListTools
 
@@ -35,6 +36,13 @@ class Bargain:
         # 配置参数
         self.order_check_interval = config.get("order_check_interval", 5)  # 秒级
         self.agent_action_interval = config.get("agent_action_interval", 60)  # 分钟级
+        
+        # 交易费用配置
+        self.commission_rate = config.get("commission_rate", 0.0003)  # 佣金费率
+        self.stamp_duty_rate = config.get("stamp_duty_rate", 0.001)   # 印花税率（卖出收取）
+        self.transfer_fee_rate = config.get("transfer_fee_rate", 0.00002)  # 过户费率
+        self.order_expiry_days = config.get("order_expiry_days", 7)   # 订单过期天数
+        self.order_cleanup_days = config.get("order_cleanup_days", 14)  # 订单清理天数
     
     def _initialize_account(self) -> AccountSchema:
         """初始化账户数据"""
@@ -67,19 +75,17 @@ class Bargain:
     def _account_to_session_state(self) -> Dict[str, Any]:
         """将账户数据转换为session_state格式"""
         account_dict = self.account.dict()
-        account_str = json.dumps(account_dict, default=str)
         
         return {
-            "account": account_str,
+            "account_dict": account_dict,
             "last_update": datetime.now().isoformat()
         }
-    
+
     def _session_state_to_account(self, session_state: Dict[str, Any]) -> Optional[AccountSchema]:
         """从session_state恢复账户数据"""
         try:
-            account_str = session_state.get("account")
-            if account_str:
-                account_dict = json.loads(account_str)
+            account_dict = session_state.get("account_dict")
+            if account_dict:
                 return AccountSchema(**account_dict)
             return None
         except Exception as e:
@@ -112,6 +118,60 @@ class Bargain:
             debug_mode=self.config.get("debug", False)
         )
     
+    def _get_realtime_data(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        使用akshare获取股票实时盘口数据
+        
+        Args:
+            symbol: 股票代码
+            
+        Returns:
+            实时数据字典，包含买卖盘口信息
+        """
+        try:
+            # 获取实时数据
+            stock_data = ak.stock_zh_a_spot_em()
+            stock_info = stock_data[stock_data['代码'] == symbol]
+            
+            if stock_info.empty:
+                print(f"未找到股票 {symbol} 的实时数据")
+                return None
+            
+            # 提取盘口数据
+            realtime_data = {
+                'symbol': symbol,
+                'name': stock_info['名称'].iloc[0],
+                'current_price': float(stock_info['最新价'].iloc[0]),
+                'high': float(stock_info['最高'].iloc[0]),
+                'low': float(stock_info['最低'].iloc[0]),
+                'bid1_price': float(stock_info['买一价'].iloc[0]),
+                'bid1_volume': int(stock_info['买一量'].iloc[0]),
+                'ask1_price': float(stock_info['卖一价'].iloc[0]),
+                'ask1_volume': int(stock_info['卖一量'].iloc[0]),
+                'volume': int(stock_info['成交量'].iloc[0]),
+                'amount': float(stock_info['成交额'].iloc[0]),
+                'timestamp': datetime.now()
+            }
+            
+            return realtime_data
+            
+        except Exception as e:
+            print(f"获取股票 {symbol} 实时数据失败: {e}")
+            return None
+    
+    def _cleanup_expired_orders(self, timestamp: datetime):
+        """清理过期订单（超过两周）"""
+        cleanup_threshold = timestamp - timedelta(days=self.order_cleanup_days)
+        self.account.orders = [
+            order for order in self.account.orders 
+            if order.timestamp > cleanup_threshold or order.status == OrderStatus.PENDING
+        ]
+    
+    def _is_order_expired(self, order: OrderSchema, timestamp: datetime) -> bool:
+        """检查订单是否过期（超过一周）"""
+        expiry_threshold = timestamp - timedelta(days=self.order_expiry_days)
+        return order.timestamp < expiry_threshold
+    
     def _process_orders(self):
         """
         交易处理方法 - 秒级执行
@@ -121,121 +181,205 @@ class Bargain:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 检查待处理订单...")
             
             with self.account_lock:
+                timestamp = datetime.now()
+                
+                # 清理过期订单
+                self._cleanup_expired_orders(timestamp)
+                
                 # 获取待处理订单
                 pending_orders = [order for order in self.account.orders 
-                                if order.status == "PENDING"]
+                                if order.status == OrderStatus.PENDING]
                 
                 if not pending_orders:
                     print("暂无待处理订单")
                     return
                 
+                print(f"发现 {len(pending_orders)} 个待处理订单")
+                
                 for order in pending_orders:
-                    # 模拟订单执行检查逻辑
-                    print(f"检查订单 {order.order_id}: {order.symbol} {order.order_type}")
+                    # 检查订单是否过期
+                    if self._is_order_expired(order, timestamp):
+                        order.status = OrderStatus.EXPIRED
+                        print(f"订单已过期: {order.order_id}")
+                        continue
                     
-                    # 模拟订单执行（50%概率执行）
-                    import random
-                    if random.random() > 0.5:
-                        self._execute_order(order)
-                        print(f"订单 {order.order_id} 已执行")
-                    else:
-                        print(f"订单 {order.order_id} 等待执行条件")
+                    # 尝试执行订单
+                    self._try_execute_order(order, timestamp)
+                    
+                # 更新账户资产数据
+                self._update_account_assets(timestamp)
                     
         except Exception as e:
             print(f"处理订单时发生错误: {e}")
     
-    def _execute_order(self, order):
-        """
-        执行订单
-        Demo方法 - 实际需要接入交易接口
-        """
+    def _try_execute_order(self, order: OrderSchema, timestamp: datetime):
+        """尝试执行单个订单"""
         try:
-            # 更新订单状态为成功
-            order.status = "SUCCESS"
-            order.timestamp = datetime.now()
+            # 获取股票实时数据
+            realtime_data = self._get_realtime_data(order.symbol)
+            if not realtime_data:
+                print(f"股票数据不存在: {order.symbol}")
+                return
             
-            # 更新账户资金和持仓
+            # 检查价格是否在当日波动范围内
+            if not (realtime_data['low'] <= order.price <= realtime_data['high']):
+                print(f"订单价格不在波动范围内: {order.price} not in [{realtime_data['low']}, {realtime_data['high']}]")
+                return
+            
+            # 检查订单执行条件
             if order.order_type == "BUY":
-                self._update_account_after_buy(order)
+                # 买入订单：订单价格 >= 卖一价 才能成交
+                if order.price >= realtime_data['ask1_price']:
+                    self._execute_buy_order(order, realtime_data, timestamp)
+                else:
+                    print(f"买入订单价格 {order.price} < 卖一价 {realtime_data['ask1_price']}，等待")
             else:  # SELL
-                self._update_account_after_sell(order)
-                
+                # 卖出订单：订单价格 <= 买一价 才能成交
+                if order.price <= realtime_data['bid1_price']:
+                    self._execute_sell_order(order, realtime_data, timestamp)
+                else:
+                    print(f"卖出订单价格 {order.price} > 买一价 {realtime_data['bid1_price']}，等待")
+                    
         except Exception as e:
-            print(f"执行订单时发生错误: {e}")
-            order.status = "FAILED"
+            print(f"执行订单失败 {order.order_id}: {str(e)}")
     
-    def _update_account_after_buy(self, order):
-        """买入订单执行后更新账户"""
-        cost = order.price * order.quantity
-        self.account.account_info.available_cash -= cost
-        
-        # 更新持仓
-        position = self._find_or_create_position(order.symbol)
-        position.quantity += order.quantity
-        position.available_quantity += order.quantity
-        position.market_value = position.quantity * order.price
-        
-        self._update_account_metrics()
+    def _execute_buy_order(self, order: OrderSchema, realtime_data: Dict[str, Any], timestamp: datetime):
+        """执行买入订单"""
+        try:
+            # 计算交易金额和费用
+            total_cost = order.price * order.quantity
+            commission = total_cost * self.commission_rate
+            transfer_fee = total_cost * self.transfer_fee_rate
+            total_amount = total_cost + commission + transfer_fee
+            
+            # 检查资金是否足够
+            if self.account.account_info.available_cash < total_amount:
+                print(f"资金不足，无法执行买入订单: 需要{total_amount:.2f}，可用{self.account.account_info.available_cash:.2f}")
+                return
+            
+            # 扣除资金
+            self.account.account_info.available_cash -= total_amount
+            
+            # 更新或创建持仓
+            position = self._get_position(order.symbol)
+            if position:
+                # 更新现有持仓（成本价按加权平均计算）
+                old_value = position.cost_price * position.quantity
+                new_value = order.price * order.quantity
+                total_quantity = position.quantity + order.quantity
+                position.cost_price = (old_value + new_value) / total_quantity
+                position.quantity = total_quantity
+                position.available_quantity = total_quantity
+                position.current_price = realtime_data['current_price']
+                position.market_value = position.quantity * realtime_data['current_price']
+            else:
+                # 创建新持仓
+                position = PositionData(
+                    timestamp=timestamp,
+                    symbol=order.symbol,
+                    name=realtime_data['name'],
+                    quantity=order.quantity,
+                    available_quantity=order.quantity,
+                    cost_price=order.price,
+                    current_price=realtime_data['current_price'],
+                    market_value=order.quantity * realtime_data['current_price'],
+                    profit_loss=0.0,
+                    profit_loss_rate=0.0
+                )
+                self.account.positions.append(position)
+            
+            # 更新订单状态
+            order.status = OrderStatus.SUCCESS
+            order.timestamp = timestamp
+            
+            print(f"✅ 买入订单执行成功: {order.symbol} {order.quantity}股 @ {order.price}")
+            
+        except Exception as e:
+            print(f"执行买入订单失败: {str(e)}")
     
-    def _update_account_after_sell(self, order):
-        """卖出订单执行后更新账户"""
-        revenue = order.price * order.quantity
-        self.account.account_info.available_cash += revenue
-        
-        # 更新持仓
-        position = self._find_position(order.symbol)
-        if position:
+    def _execute_sell_order(self, order: OrderSchema, realtime_data: Dict[str, Any], timestamp: datetime):
+        """执行卖出订单"""
+        try:
+            # 检查持仓是否足够
+            position = self._get_position(order.symbol)
+            if not position or position.available_quantity < order.quantity:
+                available_qty = position.available_quantity if position else 0
+                print(f"持仓不足，无法执行卖出订单: 需要{order.quantity}，可用{available_qty}")
+                return
+            
+            # 计算交易金额和费用
+            total_amount = order.price * order.quantity
+            commission = total_amount * self.commission_rate
+            stamp_duty = total_amount * self.stamp_duty_rate  # 卖出收取印花税
+            transfer_fee = total_amount * self.transfer_fee_rate
+            net_amount = total_amount - commission - stamp_duty - transfer_fee
+            
+            # 更新持仓
             position.quantity -= order.quantity
             position.available_quantity -= order.quantity
-            position.market_value = position.quantity * order.price
+            position.current_price = realtime_data['current_price']
+            position.market_value = position.quantity * realtime_data['current_price']
             
+            # 如果持仓为0，移除该持仓
             if position.quantity <= 0:
                 self.account.positions.remove(position)
-        
-        self._update_account_metrics()
+            
+            # 增加资金
+            self.account.account_info.available_cash += net_amount
+            
+            # 更新订单状态
+            order.status = OrderStatus.SUCCESS
+            order.timestamp = timestamp
+            
+            print(f"✅ 卖出订单执行成功: {order.symbol} {order.quantity}股 @ {order.price}")
+            
+        except Exception as e:
+            print(f"执行卖出订单失败: {str(e)}")
     
-    def _find_or_create_position(self, symbol):
-        """查找或创建持仓"""
-        position = self._find_position(symbol)
-        if not position:
-            position = PositionData(
-                timestamp=datetime.now(),
-                symbol=symbol,
-                name=f"股票{symbol}",
-                quantity=0,
-                available_quantity=0,
-                cost_price=0,
-                current_price=0,
-                market_value=0,
-                profit_loss=0,
-                profit_loss_rate=0
-            )
-            self.account.positions.append(position)
-        return position
-    
-    def _find_position(self, symbol):
-        """查找持仓"""
+    def _get_position(self, symbol: str) -> Optional[PositionData]:
+        """获取指定股票的持仓"""
         for position in self.account.positions:
             if position.symbol == symbol:
                 return position
         return None
     
-    def _update_account_metrics(self):
-        """更新账户指标"""
-        # 计算总市值
-        total_market_value = sum(position.market_value for position in self.account.positions)
-        self.account.account_info.market_value = total_market_value
-        
-        # 计算总资产
-        self.account.account_info.total_assets = (
-            self.account.account_info.available_cash + total_market_value
-        )
-        
-        # 计算持仓比例
-        if self.account.account_info.total_assets > 0:
-            self.account.account_info.position_rate = (
-                total_market_value / self.account.account_info.total_assets * 100
-            )
+    def _update_account_assets(self, timestamp: datetime):
+        """更新账户资产数据"""
+        try:
+            # 更新持仓的当前价格和市值
+            total_market_value = 0.0
+            total_profit_loss = 0.0
+            total_cost = 0.0
+            
+            for position in self.account.positions:
+                # 更新持仓的当前价格（从实时数据获取）
+                realtime_data = self._get_realtime_data(position.symbol)
+                if realtime_data:
+                    current_price = realtime_data['current_price']
+                    position.current_price = current_price
+                    position.market_value = current_price * position.quantity
+                    position.profit_loss = (current_price - position.cost_price) * position.quantity
+                    position.profit_loss_rate = (current_price - position.cost_price) / position.cost_price * 100
+                    
+                    total_market_value += position.market_value
+                    total_profit_loss += position.profit_loss
+                    total_cost += position.cost_price * position.quantity
+                
+                # 更新持仓时间戳
+                position.timestamp = timestamp
+            
+            # 更新账户信息
+            account_info = self.account.account_info
+            account_info.timestamp = timestamp
+            account_info.market_value = total_market_value
+            account_info.total_assets = account_info.available_cash + total_market_value
+            account_info.net_assets = account_info.total_assets
+            account_info.total_profit_loss = total_profit_loss
+            account_info.total_profit_loss_rate = (total_profit_loss / total_cost * 100) if total_cost > 0 else 0.0
+            account_info.position_rate = (total_market_value / account_info.total_assets * 100) if account_info.total_assets > 0 else 0.0
+            
+        except Exception as e:
+            print(f"更新账户资产数据失败: {str(e)}")
     
     def _agent_action(self):
         """
@@ -329,7 +473,12 @@ def main():
         "db_file": "tmp/bargain_demo.db",
         "debug": True,
         "order_check_interval": 5,      # 5秒检查一次订单
-        "agent_action_interval": 30     # 30秒执行一次Agent分析（demo用短时间）
+        "agent_action_interval": 120,    # 120秒执行一次Agent分析（demo用短时间）
+        "commission_rate": 0.0003,      # 佣金费率
+        "stamp_duty_rate": 0.001,       # 印花税率
+        "transfer_fee_rate": 0.00002,   # 过户费率
+        "order_expiry_days": 7,         # 订单过期天数
+        "order_cleanup_days": 14        # 订单清理天数
     }
     
     bargain_system = Bargain(config)

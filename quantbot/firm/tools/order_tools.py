@@ -28,10 +28,9 @@ class OrderTools(Toolkit):
     def _get_account(self, run_context: RunContext) -> Optional[AccountSchema]:
         """从session_state获取并解析account"""
         try:
-            account_str = run_context.session_state.get("account")
-            if not account_str:
+            account_dict = run_context.session_state.get("account_dict")
+            if not account_dict:
                 return None
-            account_dict = json.loads(account_str)
             return AccountSchema(**account_dict)
         except Exception as e:
             print(f"解析account时发生错误: {str(e)}")
@@ -41,7 +40,7 @@ class OrderTools(Toolkit):
         """保存account到session_state"""
         try:
             account_dict = account.dict()
-            run_context.session_state["account"] = json.dumps(account_dict, default=str)
+            run_context.session_state["account_dict"] = account_dict
             return True
         except Exception as e:
             print(f"保存account时发生错误: {str(e)}")

@@ -4,6 +4,7 @@ import json
 import requests
 import os
 import sys
+import akshare as ak
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -24,6 +25,7 @@ class IndexRealTimeData(BaseModel):
     open: float = Field(..., description="开盘价")
     high: float = Field(..., description="最高价")
     low: float = Field(..., description="最低价")
+    prev_close: float = Field(..., description="前收盘价")
 
 class StockRealTimeData(BaseModel):
     """股票实时数据"""
@@ -36,6 +38,7 @@ class StockRealTimeData(BaseModel):
     open: float = Field(..., description="开盘价")
     high: float = Field(..., description="最高价")
     low: float = Field(..., description="最低价")
+    prev_close: float = Field(..., description="前收盘价")
     
     # 盘口信息
     bid_prices: List[float] = Field(..., description="买一至买五价格")
@@ -49,6 +52,10 @@ class StockRealTimeData(BaseModel):
     # 涨跌信息
     change: float = Field(..., description="涨跌额")
     change_rate: float = Field(..., description="涨跌幅")
+    
+    # 振幅和换手率
+    amplitude: float = Field(..., description="振幅")
+    turnover_rate: float = Field(..., description="换手率")
 
 
 class MarketDataTools(Toolkit):
@@ -62,118 +69,171 @@ class MarketDataTools(Toolkit):
                 self.get_index_realtime,
                 self.get_multiple_stocks,
                 self.get_multiple_indices,
-                self.get_stock_basic_info
             ],
             **kwargs
         )
         
-        # 股票代码映射表（示例数据）
-        self.stock_name_map = {
-            "000001": "平安银行",
-            "000002": "万科A", 
-            "000858": "五粮液",
-            "600519": "贵州茅台",
-            "601318": "中国平安",
-            "600036": "招商银行",
-            "000063": "中兴通讯",
-            "300059": "东方财富",
-            "002415": "海康威视",
-            "000333": "美的集团"
+        # 股票代码映射表（用于代码格式转换）
+        self.stock_code_map = {
+            "000001": "000001",  # 平安银行
+            "000002": "000002",  # 万科A
+            "000858": "000858",  # 五粮液
+            "600519": "600519",  # 贵州茅台
+            "601318": "601318",  # 中国平安
+            "600036": "600036",  # 招商银行
+            "000063": "000063",  # 中兴通讯
+            "300059": "300059",  # 东方财富
+            "002415": "002415",  # 海康威视
+            "000333": "000333"   # 美的集团
         }
         
         # 指数代码映射表
-        self.index_name_map = {
-            "000001": "上证指数",
-            "399001": "深证成指", 
-            "399006": "创业板指",
-            "000300": "沪深300",
-            "000905": "中证500",
-            "399005": "中小板指",
-            "000016": "上证50",
-            "399673": "创业板50"
+        self.index_code_map = {
+            "000001": "000001",  # 上证指数
+            "399001": "399001",  # 深证成指
+            "399006": "399006",  # 创业板指
+            "000300": "000300",  # 沪深300
+            "000905": "000905",  # 中证500
+            "399005": "399005",  # 中小板指
+            "000016": "000016",  # 上证50
+            "399673": "399673"   # 创业板50
         }
 
-    def _get_stock_data_from_api(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def _get_stock_data_from_akshare(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
-        从API获取股票实时数据（模拟实现）
-        实际使用时可以替换为真实的股票数据API
+        使用akshare获取股票实时数据
         """
         try:
-            # 这里使用模拟数据，实际可以接入akshare、tushare、新浪财经等API
-            import random
-            import time
+            # 获取实时行情数据
+            stock_zh_a_spot_df = ak.stock_zh_a_spot_em()
             
-            # 模拟API延迟
-            time.sleep(0.1)
+            # 查找指定股票
+            stock_data = stock_zh_a_spot_df[stock_zh_a_spot_df['代码'] == symbol]
             
-            # 基础价格（模拟）
-            base_price = random.uniform(10, 100)
-            change_rate = random.uniform(-0.05, 0.05)
-            change = base_price * change_rate
-            current_price = base_price + change
+            if stock_data.empty:
+                # 如果没找到，尝试获取个股历史数据
+                try:
+                    stock_individual_df = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="hfq")
+                    if not stock_individual_df.empty:
+                        latest_data = stock_individual_df.iloc[-1]
+                        return {
+                            "symbol": symbol,
+                            "name": f"股票{symbol}",
+                            "timestamp": datetime.now(),
+                            "current_price": float(latest_data['收盘']),
+                            "open": float(latest_data['开盘']),
+                            "high": float(latest_data['最高']),
+                            "low": float(latest_data['最低']),
+                            "prev_close": float(latest_data['收盘']),
+                            "bid_prices": [float(latest_data['收盘'])] * 5,
+                            "bid_volumes": [0] * 5,
+                            "ask_prices": [float(latest_data['收盘'])] * 5,
+                            "ask_volumes": [0] * 5,
+                            "volume": float(latest_data['成交量']),
+                            "turnover": float(latest_data['成交额']),
+                            "change": 0.0,
+                            "change_rate": 0.0,
+                            "amplitude": 0.0,
+                            "turnover_rate": 0.0
+                        }
+                except:
+                    pass
+                return None
+            
+            # 提取数据
+            stock_row = stock_data.iloc[0]
+            
+            # 构建盘口数据
+            bid_prices = [
+                float(stock_row['买一价']), float(stock_row['买二价']), 
+                float(stock_row['买三价']), float(stock_row['买四价']), 
+                float(stock_row['买五价'])
+            ]
+            bid_volumes = [
+                float(stock_row['买一量']), float(stock_row['买二量']),
+                float(stock_row['买三量']), float(stock_row['买四量']),
+                float(stock_row['买五量'])
+            ]
+            ask_prices = [
+                float(stock_row['卖一价']), float(stock_row['卖二价']),
+                float(stock_row['卖三价']), float(stock_row['卖四价']),
+                float(stock_row['卖五价'])
+            ]
+            ask_volumes = [
+                float(stock_row['卖一量']), float(stock_row['卖二量']),
+                float(stock_row['卖三量']), float(stock_row['卖四量']),
+                float(stock_row['卖五量'])
+            ]
+            
+            current_price = float(stock_row['最新价'])
+            prev_close = float(stock_row['昨收'])
+            change = current_price - prev_close
+            change_rate = (change / prev_close * 100) if prev_close != 0 else 0
             
             return {
                 "symbol": symbol,
-                "name": self.stock_name_map.get(symbol, f"股票{symbol}"),
+                "name": stock_row['名称'],
                 "timestamp": datetime.now(),
-                "current_price": round(current_price, 2),
-                "open": round(base_price * random.uniform(0.98, 1.02), 2),
-                "high": round(current_price * random.uniform(1.0, 1.03), 2),
-                "low": round(current_price * random.uniform(0.97, 1.0), 2),
-                "bid_prices": [round(current_price * random.uniform(0.995, 0.999), 2) for _ in range(5)],
-                "bid_volumes": [random.randint(100, 1000) for _ in range(5)],
-                "ask_prices": [round(current_price * random.uniform(1.001, 1.005), 2) for _ in range(5)],
-                "ask_volumes": [random.randint(100, 1000) for _ in range(5)],
-                "volume": random.randint(1000000, 50000000),
-                "turnover": random.uniform(10000000, 500000000),
-                "change": round(change, 2),
-                "change_rate": round(change_rate * 100, 2)
+                "current_price": current_price,
+                "open": float(stock_row['今开']),
+                "high": float(stock_row['最高']),
+                "low": float(stock_row['最低']),
+                "prev_close": prev_close,
+                "bid_prices": bid_prices,
+                "bid_volumes": bid_volumes,
+                "ask_prices": ask_prices,
+                "ask_volumes": ask_volumes,
+                "volume": float(stock_row['成交量']),
+                "turnover": float(stock_row['成交额']),
+                "change": round(change, 3),
+                "change_rate": round(change_rate, 2),
+                "amplitude": float(stock_row['振幅']),
+                "turnover_rate": float(stock_row['换手率'])
             }
             
         except Exception as e:
-            print(f"获取股票数据时发生错误: {e}")
+            print(f"通过akshare获取股票数据时发生错误: {e}")
             return None
 
-    def _get_index_data_from_api(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def _get_index_data_from_akshare(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
-        从API获取指数实时数据（模拟实现）
+        使用akshare获取指数实时数据
         """
         try:
-            import random
-            import time
+            # 获取指数实时行情
+            index_spot_df = ak.stock_zh_index_spot_em()
             
-            time.sleep(0.1)
+            # 查找指定指数
+            index_data = index_spot_df[index_spot_df['代码'] == symbol]
             
-            # 不同指数的基础价格
-            base_prices = {
-                "000001": 3000,  # 上证指数
-                "399001": 10000, # 深证成指
-                "399006": 2000,  # 创业板指
-                "000300": 3800,  # 沪深300
-                "000905": 6000,  # 中证500
-            }
+            if index_data.empty:
+                return None
             
-            base_price = base_prices.get(symbol, 3000)
-            change_rate = random.uniform(-0.03, 0.03)
-            change = base_price * change_rate
-            current_price = base_price + change
+            # 提取数据
+            index_row = index_data.iloc[0]
+            
+            current_price = float(index_row['最新价'])
+            prev_close = float(index_row['昨收'])
+            change = current_price - prev_close
+            change_rate = (change / prev_close * 100) if prev_close != 0 else 0
             
             return {
                 "symbol": symbol,
-                "name": self.index_name_map.get(symbol, f"指数{symbol}"),
+                "name": index_row['名称'],
                 "timestamp": datetime.now(),
-                "current_price": round(current_price, 2),
-                "change": round(change, 2),
-                "change_rate": round(change_rate * 100, 2),
-                "volume": random.randint(100000000, 5000000000),
-                "turnover": random.uniform(1000000000, 50000000000),
-                "open": round(base_price * random.uniform(0.99, 1.01), 2),
-                "high": round(current_price * random.uniform(1.0, 1.02), 2),
-                "low": round(current_price * random.uniform(0.98, 1.0), 2)
+                "current_price": current_price,
+                "change": round(change, 3),
+                "change_rate": round(change_rate, 2),
+                "volume": float(index_row['成交量']),
+                "turnover": float(index_row['成交额']),
+                "open": float(index_row['今开']),
+                "high": float(index_row['最高']),
+                "low": float(index_row['最低']),
+                "prev_close": prev_close
             }
             
         except Exception as e:
-            print(f"获取指数数据时发生错误: {e}")
+            print(f"通过akshare获取指数数据时发生错误: {e}")
             return None
 
     def get_stock_realtime(self, symbol: str) -> str:
@@ -188,8 +248,8 @@ class MarketDataTools(Toolkit):
             if not symbol or len(symbol) != 6 or not symbol.isdigit():
                 return json.dumps({"error": "股票代码必须为6位数字"}, ensure_ascii=False)
             
-            # 获取数据
-            stock_data = self._get_stock_data_from_api(symbol)
+            # 获取真实数据
+            stock_data = self._get_stock_data_from_akshare(symbol)
             if not stock_data:
                 return json.dumps({"error": f"获取股票{symbol}数据失败"}, ensure_ascii=False)
             
@@ -212,8 +272,8 @@ class MarketDataTools(Toolkit):
             if not symbol:
                 return json.dumps({"error": "指数代码不能为空"}, ensure_ascii=False)
             
-            # 获取数据
-            index_data = self._get_index_data_from_api(symbol)
+            # 获取真实数据
+            index_data = self._get_index_data_from_akshare(symbol)
             if not index_data:
                 return json.dumps({"error": f"获取指数{symbol}数据失败"}, ensure_ascii=False)
             
@@ -242,7 +302,7 @@ class MarketDataTools(Toolkit):
                     })
                     continue
                 
-                stock_data = self._get_stock_data_from_api(symbol)
+                stock_data = self._get_stock_data_from_akshare(symbol)
                 if stock_data:
                     stock_realtime = StockRealTimeData(**stock_data)
                     results.append(stock_realtime.dict())
@@ -275,7 +335,7 @@ class MarketDataTools(Toolkit):
                     })
                     continue
                 
-                index_data = self._get_index_data_from_api(symbol)
+                index_data = self._get_index_data_from_akshare(symbol)
                 if index_data:
                     index_realtime = IndexRealTimeData(**index_data)
                     results.append(index_realtime.dict())

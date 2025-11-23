@@ -9,7 +9,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from general.schemas.account_schema import AccountSchema, AccountData, PositionData
 from general.schemas.order_schema import OrderFormSchema, OrderResultSchema, OrderSchema, OrderStatus, OrderType
-from general.schemas.action_schema import ActionSchemaUnion, AddOrderActionSchema, CancelOrderActionSchema, NoneActionSchema, ActionType
+from quantbot.firm.general.schemas.action_schema import ActionSchemaUnion, AddOrderActionSchema, CancelOrderActionSchema, NoneActionSchema, ActionType
 from general.schemas.market_schema import MarketSchema, StockRealTimeData
 from general.interfaces.exchange_interface import ExchangeInterface
 from account.base import Account

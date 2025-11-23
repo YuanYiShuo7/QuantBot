@@ -4,7 +4,7 @@ from datetime import datetime
 
 from ..schemas.account_schema import AccountSchema 
 from ..schemas.order_schema import OrderFormSchema, OrderResultSchema
-from ..schemas.action_schema import ActionSchemaUnion
+from ....firm.general.schemas.action_schema import ActionSchemaUnion
 from ..schemas.market_schema import MarketSchema
 class ExchangeInterface(ABC):
     """模拟交易所接口类"""

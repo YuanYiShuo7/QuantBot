@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
-from ..schemas.action_schema import ActionSchemaUnion
+from ....firm.general.schemas.action_schema import ActionSchemaUnion
 
 
 class LLMAgentInterface(ABC):

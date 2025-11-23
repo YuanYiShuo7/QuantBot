@@ -11,7 +11,7 @@ import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from general.schemas.action_schema import ActionSchemaUnion, AddOrderActionSchema, CancelOrderActionSchema, NoneActionSchema, ActionType
+from quantbot.firm.general.schemas.action_schema import ActionSchemaUnion, AddOrderActionSchema, CancelOrderActionSchema, NoneActionSchema, ActionType
 from general.schemas.order_schema import OrderFormSchema, OrderType
 from general.interfaces.llm_agent_interface import LLMAgentInterface
 from account.base import Account
@@ -174,58 +174,58 @@ A股交易规则：
             self.logger.error(f"生成prompt失败: {str(e)}")
             return self.system_prompt
     
-def generate_output(self, prompt: str) -> str:
-    """基于prompt生成输出 - 单轮对话模式（简化版）"""
-    try:
-        if self.tokenizer is None or self.model is None:
-            raise RuntimeError("模型未正确加载")
-        
-        # 直接构建Qwen2对话格式
-        text = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
-        
-        # 对完整文本进行编码
-        inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=2048)
-        
-        # 移动到设备
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-        
-        # 生成配置
-        generation_config = {
-            "max_new_tokens": 512,
-            "do_sample": True,
-            "temperature": 0.9,
-            "top_p": 0.9,
-            "pad_token_id": self.tokenizer.eos_token_id,  # Qwen2使用eos_token作为pad_token
-            "eos_token_id": self.tokenizer.eos_token_id,
-        }
-        
-        # 生成输出
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                **generation_config
-            )
-        
-        # 解码输出
-        generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
-        # 提取模型回复部分（去除输入）
-        response = generated_text[len(text):].strip()
-        
-        # 如果响应以<|im_end|>结尾，移除它
-        if response.endswith("<|im_end|>"):
-            response = response[:-10].strip()
-        
-        self.logger.debug(f"模型原始输出: {response[:200]}...")
-        return response
-        
-    except Exception as e:
-        self.logger.error(f"生成输出失败: {str(e)}")
-        # 返回默认的无操作响应
-        return json.dumps({
-            "reasoning": f"系统错误，无法生成交易决策: {str(e)}",
-            "action_type": "NONE"
-        }, ensure_ascii=False)
+    def generate_output(self, prompt: str) -> str:
+        """基于prompt生成输出 - 单轮对话模式（简化版）"""
+        try:
+            if self.tokenizer is None or self.model is None:
+                raise RuntimeError("模型未正确加载")
+            
+            # 直接构建Qwen2对话格式
+            text = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+            
+            # 对完整文本进行编码
+            inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=2048)
+            
+            # 移动到设备
+            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+            
+            # 生成配置
+            generation_config = {
+                "max_new_tokens": 512,
+                "do_sample": True,
+                "temperature": 0.9,
+                "top_p": 0.9,
+                "pad_token_id": self.tokenizer.eos_token_id,  # Qwen2使用eos_token作为pad_token
+                "eos_token_id": self.tokenizer.eos_token_id,
+            }
+            
+            # 生成输出
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    **generation_config
+                )
+            
+            # 解码输出
+            generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            # 提取模型回复部分（去除输入）
+            response = generated_text[len(text):].strip()
+            
+            # 如果响应以<|im_end|>结尾，移除它
+            if response.endswith("<|im_end|>"):
+                response = response[:-10].strip()
+            
+            self.logger.debug(f"模型原始输出: {response[:200]}...")
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"生成输出失败: {str(e)}")
+            # 返回默认的无操作响应
+            return json.dumps({
+                "reasoning": f"系统错误，无法生成交易决策: {str(e)}",
+                "action_type": "NONE"
+            }, ensure_ascii=False)
     
     def parse_action(self, output: str) -> List[ActionSchemaUnion]:
         """解析输出文本为动作列表"""
