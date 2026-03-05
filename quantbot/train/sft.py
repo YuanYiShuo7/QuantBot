@@ -25,7 +25,7 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class ScoreWeightedTrainer:
+class SFTTrainer:
     def __init__(
         self,
         model_path: str = "quantbot/llm/Qwen2-7B-Instruct",
@@ -437,7 +437,7 @@ class ScoreWeightedTrainer:
 def main():
     """主函数"""
     # 初始化训练器
-    trainer = ScoreWeightedTrainer()
+    trainer = SFTTrainer()
     
     # 选择训练方法
     method = "weighted"  # 可选: "weighted", "filtered"
